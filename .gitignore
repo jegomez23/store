@@ -32,9 +32,15 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
+
+# supabase CLI (estado local generado por `supabase start`/db reset)
+/supabase/.branches
+/supabase/.temp
+/supabase/.env
 
 # typescript
 *.tsbuildinfo

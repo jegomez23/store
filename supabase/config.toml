@@ -1,0 +1,35 @@
+# Configuración para `supabase` CLI (desarrollo local). NO se pudo validar
+# contra una instalación real del CLI en este entorno (no disponible aquí —
+# ver limitación documentada en docs/context/CURRENT-STATE.md). Ajustar
+# `major_version` si difiere de la versión de Postgres del proyecto real
+# cuando se provisione.
+
+project_id = "yi-store"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed/*.sql"]
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000"]
+
+[storage]
+enabled = true
+file_size_limit = "5MiB"
