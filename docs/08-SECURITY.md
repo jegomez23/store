@@ -2,7 +2,15 @@
 
 > Modelo de seguridad completo. Principio rector (DEC-009): **la seguridad vive en la base de datos (RLS), no en ocultar rutas**.
 >
-> **Estado real:** §4 (RLS) y §6 (Storage) están **implementados** en `supabase/migrations/` (Fase 3) — sin validar contra Postgres real en este entorno (sin Docker disponible, ver `docs/context/CURRENT-STATE.md`). §2 (Auth), §3 (autorización en capas 1-3) y §5 (protección de rutas / `proxy.ts`) siguen **sin implementar** — se construyen en Fase 7 junto al panel admin; la Fase 3 solo dejó preparada la tabla `profiles` + `is_admin()` (capa 4, la definitiva) para que la UI de auth se apoye en algo real cuando llegue.
+> **Estado real:** §4 (RLS) y §6 (Storage) están **implementados y VALIDADOS CONTRA EL PROYECTO SUPABASE REAL** (Fase 4.5, 2026-09-01). §2 (Auth), §3 (autorización en capas 1-3) y §5 (protección de rutas / `proxy.ts`) siguen **sin implementar** — se construyen en Fase 7 junto al panel admin; la Fase 3 dejó preparada la tabla `profiles` + `is_admin()` (capa 4, la definitiva) y la Fase 4.5 comprobó que esa capa funciona de verdad.
+>
+> **Resultado de la validación de Fase 4.5** (ejecutada contra la instancia real con anon key, un usuario autenticado sin rol y un admin temporal creado y eliminado durante la prueba):
+> - **anon** lee el catálogo público permitido y **no obtiene ni una fila** de `customers`, `orders`, `order_items`, `order_events` ni `profiles`. Todos sus INSERT fueron rechazados (401/403, `42501`); UPDATE y DELETE afectaron 0 filas. Recuento de filas idéntico antes y después de la batería de escritura.
+> - **authenticated sin rol admin** se comporta igual que anon: sin acceso a tablas privadas, sin escritura en catálogo. **Intento explícito de escalada de privilegios** (auto-insertarse en `profiles` con `role='admin'`) → denegado (403). El alta de admin solo es posible fuera de banda (service role / SQL), como exige DEC-020.
+> - **admin** puede leer las tablas privadas y escribir en `products`, `categories`, `product_variants`, `product_images`, `promotions`, `settings`, `shipping_methods`, `home_content`, `customers` y `orders`.
+> - **`order_events` es append-only de verdad:** el admin puede INSERT y SELECT, pero UPDATE y DELETE le son rechazados (403, `42501`) por el `REVOKE` de la migración 0011 — la restricción no depende solo de las policies.
+> - **Storage:** lectura pública en `products`/`content`; `anon` no puede subir ni borrar; escritura solo con credencial admin/service role.
+> - **Corregidas dos debilidades reales** encontradas en el proceso: DEC-022 (el catálogo de un mercado inactivo era público) y DEC-023 (TRUNCATE/TRIGGER concedidos a `anon`). Ninguna policy se debilitó para hacer funcionar la aplicación.
 
 ---
 
@@ -16,6 +24,9 @@
 | Fuga de service role key | Nunca en cliente ni en `NEXT_PUBLIC_*`; solo módulo server-only |
 | XSS vía contenido admin | React escapa por defecto; sin `dangerouslySetInnerHTML` salvo revisión |
 | Enumeración de slugs/rutas | Respuestas 404 uniformes; sin filtración de existencia |
+| Enumeración de pedidos por número | `order_number` es correlativo y adivinable (DEC-027), así que **no existe ningún endpoint que devuelva un pedido por su número**. `/pedido/[numero]` no consulta la BD: pinta lo que dejó el propio checkout en `sessionStorage` |
+| Manipulación del carrito en localStorage | El checkout ignora precio y stock del cliente: `create_order` los resuelve en PostgreSQL (DEC-026) |
+| Pedidos duplicados por doble clic/recarga | Idempotencia garantizada por un índice UNIQUE en BD, no por el estado del botón (DEC-028) |
 
 ---
 
@@ -85,8 +96,52 @@ using (public.is_admin()) with check (public.is_admin());
 Aplicar el mismo patrón a: `categories`, `product_images`, `product_variants`, `colors`, `sizes`, `promotions`, `promotion_*`, `shipping_methods`, `settings`, `home_content`, `markets`.
 
 Variantes del patrón:
+- Tablas con `market_id` y lectura pública (`categories`, `products`, y a través de ellas `product_images`/`product_variants`): añadir `public.is_active_market(market_id)` — un mercado inactivo no expone su catálogo (DEC-022, migración `0016`).
 - `promotions`: lectura pública solo si `is_active AND (starts_at IS NULL OR starts_at <= now()) AND (ends_at IS NULL OR ends_at >= now())`.
-- `order_events`: admin INSERT + SELECT; sin UPDATE/DELETE (append-only).
+- `order_events`: admin INSERT + SELECT; sin UPDATE/DELETE (append-only). El `REVOKE UPDATE, DELETE` es obligatorio además de las policies.
+
+### Privilegios de tabla (no cubiertos por RLS)
+
+RLS filtra SELECT/INSERT/UPDATE/DELETE, pero **no** TRUNCATE ni TRIGGER. Supabase concede ALL PRIVILEGES a `anon`/`authenticated` por defecto, así que toda migración que cree una tabla en `public` debe incluir:
+
+```sql
+revoke truncate, trigger on public.<tabla> from anon, authenticated;
+```
+
+Aplicado retroactivamente a las 18 tablas en `0017` (DEC-023).
+
+### Escrituras públicas controladas: `create_order` (Fase 6, DEC-026)
+
+Las tablas de pedidos **siguen sin ninguna policy pública de INSERT**. El único
+camino por el que un cliente anónimo puede escribir en ellas es una función
+`SECURITY DEFINER`:
+
+```sql
+create function public.create_order(...) returns jsonb
+  language plpgsql security definer set search_path = public;
+revoke all on function public.create_order(...) from public;
+grant execute on function public.create_order(...) to anon, authenticated;
+```
+
+Por qué esto NO es un agujero:
+
+- El cliente solo puede enviar `variant_id`, `quantity` y sus datos de contacto.
+  **El precio no se recibe**: la función lo lee de `product_variants`. Un total
+  inyectado ni siquiera tiene parámetro por el que entrar (la llamada falla con 404).
+- Valida mercado activo, variante activa, producto publicado y no borrado, y
+  que la variante pertenezca al mercado.
+- Descuenta stock con guard atómico; sin stock no hay pedido.
+- Todo ocurre en una transacción: cualquier error revierte también el stock.
+- El pedido nace `pending`. **Nunca `paid`.**
+
+Verificado contra la instancia real (40 tests de integración con la anon key):
+precio manipulado → se guarda el precio real; `anon` no puede leer ni insertar
+directamente en `orders`/`order_items`/`order_events`/`customers`.
+
+**Riesgo residual aceptado:** al ser un endpoint público sin autenticación,
+alguien puede crear pedidos basura que consuman stock. Es inherente a un
+checkout sin login; la mitigación (rate limiting / bot protection) corresponde
+a Fase 10.
 
 ### Tablas 100% privadas
 
@@ -145,10 +200,13 @@ export const config = { matcher: '/admin/:path*' };
 | `SUPABASE_SERVICE_ROLE_KEY` | env privada servidor | ❌ NUNCA |
 | Números WhatsApp, emails | BD (`settings`) | vía APIs públicas controladas |
 
-Checklist anti-fuga:
-- [ ] Service role solo dentro de `lib/supabase/admin.ts` marcado `import 'server-only'`.
-- [ ] Ningún `process.env.SUPABASE_SERVICE_ROLE_KEY` fuera de ese módulo.
-- [ ] Revisión de bundle cliente: grep periódico de claves sensibles.
+Checklist anti-fuga (verificado en Fase 4.5, 2026-09-01):
+- [x] Service role solo dentro de `lib/supabase/admin.ts` marcado `import 'server-only'` — el módulo **aún no existe**; ninguna ruta de código de aplicación lee la clave todavía.
+- [x] Ningún `process.env.SUPABASE_SERVICE_ROLE_KEY` en `app/`, `components/`, `lib/`, `types/` ni `next.config.ts`. Las únicas env vars leídas por la app son las cuatro `NEXT_PUBLIC_*`.
+- [x] Revisión del bundle: 246 archivos de `.next/` escaneados, **0 ocurrencias** de la service role key (0 también en `.next/static/`). La anon key aparece, como es esperado por diseño (pública, protegida por RLS).
+- [x] Sin claves ni JWT hardcodeados en el repo; sin `project-ref` hardcodeado (el host de imágenes se deriva de `NEXT_PUBLIC_SUPABASE_URL`).
+- [x] `.env.local` ignorado por git y nunca commiteado (comprobado en el historial completo); solo `.env.example` está versionado, sin valores.
+- [x] Sin `any`, `as any`, `as unknown as`, `@ts-ignore` ni `@ts-expect-error` en `app/`, `components/`, `lib/` ni `types/`.
 
 ---
 

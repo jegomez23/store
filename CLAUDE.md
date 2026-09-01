@@ -45,7 +45,7 @@ Restricciones transversales: `docs/context/KNOWN-CONSTRAINTS.md`. Historial: `do
 
 ## Al terminar cada tarea
 
-- [ ] `npm run lint` y `npx tsc --noEmit` pasan
+- [ ] `npm run lint`, `npx tsc --noEmit` y `npm test` pasan
 - [ ] Documentación afectada actualizada
 - [ ] `docs/context/CURRENT-STATE.md` actualizado si cambió el estado
 - [ ] `docs/context/DECISIONS.md` actualizado si hubo decisión nueva
@@ -53,6 +53,10 @@ Restricciones transversales: `docs/context/KNOWN-CONSTRAINTS.md`. Historial: `do
 
 ## Estado del proyecto
 
-FASE 4 completada como código (Home + ficha de producto conectadas a Supabase; mocks eliminados) — **sin validar contra datos reales, `npm run build` falla en este entorno sin Supabase real** (ver `docs/context/CURRENT-STATE.md`). Próxima: FASE 5 — Carrito. Detalle y progreso real: `docs/context/CURRENT-STATE.md` y `docs/10-ROADMAP.md`.
+FASE 6 completada (checkout real por WhatsApp: pedido creado en Supabase con precio y stock resueltos en PostgreSQL, idempotente y sin overselling). `npm run lint`, `npx tsc --noEmit`, `npm test` (227) y `npm run build` pasan. Próxima: FASE 7 — Administrador (los pedidos ya se crean pero aún no hay panel para verlos). Detalle: `docs/context/CURRENT-STATE.md` y `docs/10-ROADMAP.md`.
+
+> **Checkout (Fase 6): el cliente NUNCA es autoridad de precio ni de stock.** El pedido lo crea `public.create_order` (migración `0018`), no `service_role`. Antes de tocar nada del checkout, lee `docs/context/AI-DEVELOPMENT.md` §10.
+
+> Tras cualquier migración nueva: `npm run db:push` y **regenerar `types/database.types.ts` con `npm run db:types`** (los tipos generados son la fuente de verdad del data layer; no re-declarar tipos de fila a mano).
 
 > AGENTS.md contiene un bloque gestionado por las herramientas de Next.js entre marcadores `BEGIN/END:nextjs-agent-rules`: no editarlo ni eliminarlo (origen verificado en `node_modules/next/dist/server/lib/generate-agent-files.js`). Detalles en `docs/context/AI-DEVELOPMENT.md` §4.

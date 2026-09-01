@@ -1,4 +1,5 @@
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/types/database.types";
 
 /**
  * Cliente Supabase SIN cookies, para lecturas públicas anónimas (catálogo,
@@ -8,7 +9,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
  * sigue siendo la autoridad; estas queries nunca necesitan `auth.uid()`.
  */
 export function createClient() {
-  return createSupabaseClient(
+  return createSupabaseClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   );

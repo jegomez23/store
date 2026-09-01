@@ -3,17 +3,21 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { CartIcon, GridIcon, HomeIcon } from "@/components/ui/icons";
+import { CartCountBadge, useCartLinkLabel } from "@/components/store/cart/CartCount";
 
 const ITEM_CLASSES =
   "flex flex-1 flex-col items-center justify-center gap-1 py-2 text-[11px] font-medium";
 
 /**
- * Navegación fija móvil (docs/04-UX-UI.md §4). "Categorías" y "Carrito" son
- * visuales todavía: no hay listado de categoría ni carrito real (Fase 4/5).
+ * Navegación fija móvil (docs/04-UX-UI.md §4). Desde Fase 5 "Carrito" enlaza
+ * a /carrito con el contador de unidades. "Categorías" sigue siendo un ancla:
+ * no existe listado de categoría todavía.
  */
 export function BottomNav() {
   const pathname = usePathname();
   const isHome = pathname === "/";
+  const isCart = pathname === "/carrito";
+  const cartLabel = useCartLinkLabel();
 
   return (
     <nav
@@ -32,15 +36,18 @@ export function BottomNav() {
         <GridIcon width={20} height={20} />
         Categorías
       </Link>
-      <button
-        type="button"
-        disabled
-        aria-label="Carrito (próximamente)"
-        className={`${ITEM_CLASSES} text-black disabled:cursor-not-allowed disabled:opacity-40`}
+      <Link
+        href="/carrito"
+        aria-label={cartLabel}
+        aria-current={isCart ? "page" : undefined}
+        className={`${ITEM_CLASSES} relative ${isCart ? "text-red" : "text-black"}`}
       >
-        <CartIcon width={20} height={20} />
+        <span className="relative">
+          <CartIcon width={20} height={20} />
+          <CartCountBadge className="absolute -right-2.5 -top-1.5" />
+        </span>
         Carrito
-      </button>
+      </Link>
     </nav>
   );
 }

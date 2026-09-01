@@ -1,6 +1,12 @@
 # 03 — DATABASE: Modelo de datos (PostgreSQL / Supabase)
 
-> **Implementado (Fase 3)** como migraciones versionadas en `supabase/migrations/0001`–`0015`. Este documento describe el diseño; el código SQL es la fuente de verdad del esquema real (principio §16 de la Fase 3 — code is the source of truth). Seed de desarrollo en `supabase/seed/` (solo mercado ES operativo, ver DEC-014). **Limitación conocida:** las migraciones no se han podido aplicar/validar contra una instancia Postgres real en este entorno (sin Docker/Podman disponible para `supabase start`) — revisadas manualmente, sin ejecución. Validar con `npm run db:start && npm run db:reset` (requiere Docker Desktop) o contra un proyecto Supabase real antes de confiar en ellas en producción.
+> **Implementado y VALIDADO CONTRA POSTGRES REAL** como migraciones versionadas en `supabase/migrations/0001`–`0018`. Este documento describe el diseño; el código SQL es la fuente de verdad del esquema real (code is the source of truth). Seed de desarrollo en `supabase/seed/` (solo mercado ES operativo, ver DEC-014).
+>
+> **Estado de validación (2026-09-01, Fase 4.5):** las 17 migraciones se aplicaron limpiamente sobre un proyecto Supabase real vacío (`supabase link` + `supabase db push`, PostgreSQL 17.6) — primera ejecución real del esquema. Verificado contra el catálogo del sistema: 18 tablas, RLS activo en las 18, todas las PK/FK/UNIQUE/CHECK de este documento, los 3 índices parciales de §2.6, los 10 triggers `set_updated_at` + `enforce_category_depth`, y los 2 buckets de Storage. El seed es idempotente (los 6 archivos reejecutados sin errores ni duplicados). Sigue **sin probarse el stack LOCAL** (`npm run db:start`): este entorno no tiene Docker.
+>
+> **Correcciones aplicadas en Fase 4.5** (divergencias reales entre este documento y el esquema implementado en Fase 3):
+> - `0016`: la lectura pública de `categories`/`products`/`product_images`/`product_variants` no comprobaba que el mercado estuviera activo, pese a que §3 lo exige. Corregido con `public.is_active_market(text)` (DEC-022).
+> - `0017`: `anon`/`authenticated` tenían TRUNCATE y TRIGGER sobre todas las tablas (grants por defecto de Supabase); RLS no filtra esos privilegios. Revocados (DEC-023).
 > Convenciones: snake_case · PK `uuid` con `gen_random_uuid()` · timestamps `timestamptz` · dinero `numeric(12,2)` (nunca float) · soft delete con `deleted_at` donde aplique.
 > Desviación de nombre respecto a este documento: la columna `sizes.group` se implementó como `sizes.size_group` (evita citar la palabra reservada `group` en cada query). El resto de nombres coincide exactamente con las tablas descritas abajo.
 
@@ -198,6 +204,8 @@ UNIQUE(market_id, phone).
 
 Índices: `(market_id, status)`, `(customer_id)`, `created_at DESC`.
 
+> **Fase 6:** `orders` gana `client_request_id uuid` + `client_request_fingerprint text` con índice UNIQUE parcial, para idempotencia del checkout (DEC-028). Y se añade la tabla `order_counters (market_id, last_number)`, que genera el correlativo de `order_number` por mercado (DEC-027) — sin lectura pública, porque revelaría el volumen de ventas.
+
 ### 2.13 `order_items` (snapshot inmutable)
 | Columna | Tipo | Notas |
 |---|---|---|
@@ -211,6 +219,8 @@ UNIQUE(market_id, phone).
 | unit_price | numeric(12,2) NOT NULL | snapshot precio aplicado |
 | quantity | int NOT NULL CHECK (quantity > 0) | |
 | line_total | numeric(12,2) NOT NULL | unit_price × quantity |
+
+> ⚠️ **Discrepancia conocida (Fase 6, sin corregir a propósito):** `order_items` **no guarda la imagen** del producto. Si la foto cambia o se borra, el pedido histórico ya no puede mostrarla. No se añade columna porque ni el mensaje de WhatsApp ni el admin previsto la necesitan; se documenta para que sea una decisión consciente y no un olvido.
 
 ### 2.14 `order_events` (append-only)
 | Columna | Tipo | Notas |
@@ -282,7 +292,7 @@ $$;
 | Tabla | SELECT público | Escritura |
 |---|---|---|
 | markets | activos | admin |
-| categories / products / images / variants | activos y no borrados (y market activo) | admin |
+| categories / products / images / variants | activos y no borrados **y market activo** (implementado en `0016` vía `is_active_market()`, DEC-022) | admin |
 | promotions + pivotes | activos y vigentes | admin |
 | shipping_methods / settings / home_content | activos | admin |
 | colors / sizes | activos | admin |
@@ -291,6 +301,8 @@ $$;
 | profiles | propia fila | admin (rol solo editable por service role/SQL) |
 
 Toda tabla: `ALTER TABLE ... ENABLE ROW LEVEL SECURITY;` en su migración. Sin excepciones (DEC-009).
+
+Además, toda tabla nueva de `public` debe revocar TRUNCATE y TRIGGER de `anon`/`authenticated` en su propia migración: RLS **no** filtra esos privilegios (DEC-023).
 
 ---
 
@@ -301,7 +313,11 @@ Toda tabla: `ALTER TABLE ... ENABLE ROW LEVEL SECURITY;` en su migración. Sin e
 | `products` | lectura pública; escritura solo admin | imágenes de producto (webp/jpg ≤ 5MB) |
 | `content` | lectura pública; escritura solo admin | logos, banners, categorías, hero |
 
-Policies de storage equivalentes a RLS (`is_admin()` para write; `true` para read en buckets públicos). Rutas sugeridas: `products/{product_id}/{uuid}.webp`, `content/{market}/{tipo}/{uuid}`.
+Policies de storage equivalentes a RLS (`is_admin()` para write; `true` para read en buckets públicos). Rutas sugeridas **relativas al bucket**: `{product_slug}/{uuid}.webp` dentro de `products`, `{market}/{tipo}/{uuid}` dentro de `content`.
+
+> ⚠️ La ruta guardada en `product_images.url` NO debe repetir el nombre del bucket. `supabase.storage.from('products').getPublicUrl(path)` ya antepone `products/`; guardar `products/x.jpg` genera la URL rota `.../public/products/products/x.jpg`. Bug real del seed de Fase 3, detectado y corregido en Fase 4.5.
+
+**Validado en Fase 4.5 contra el proyecto real:** ambos buckets existen y son públicos en lectura; `anon` no puede subir ni borrar (403/400); `service_role` sube y el objeto queda accesible por URL pública sin autenticación. **Pendiente de endurecimiento:** los buckets se crearon sin `file_size_limit` ni `allowed_mime_types` — el límite de "≤ 5MB, solo imagen" existe hoy solo como validación de aplicación prevista (08-SECURITY §6), no como restricción de infraestructura. `config.toml` fija 5MiB solo para el stack local.
 
 ---
 
@@ -310,7 +326,7 @@ Policies de storage equivalentes a RLS (`is_admin()` para write; `true` para rea
 - FKs explícitas con `ON DELETE` adecuado (CASCADE en dependientes huérfanos; RESTRICT en referencias comerciales).
 - `updated_at` automático vía trigger genérico.
 - Dinero SIEMPRE `numeric`; formateo en app (`lib/money/`), nunca en SQL.
-- Stock: decrementos transaccionales con `stock >= cantidad` guard (evitar negativos bajo concurrencia):
+- Stock: decrementos transaccionales con `stock >= cantidad` guard (evitar negativos bajo concurrencia). **Implementado en Fase 6** dentro de `public.create_order()`, verificado con tests de concurrencia reales (10 compras simultáneas contra 3 unidades → exactamente 3 tienen éxito, stock final 0, nunca negativo):
 ```sql
 UPDATE product_variants SET stock = stock - $qty
 WHERE id = $id AND stock >= $qty;  -- verificar rowcount

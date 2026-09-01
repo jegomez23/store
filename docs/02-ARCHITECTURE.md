@@ -94,7 +94,9 @@ components/ui no importa nada de negocio (componentes puros)
 | `/` Home | Estática con `revalidate = 300` | Contenido editable; refresco ≤5 min aceptable |
 | `/categoria/[slug]` | `generateStaticParams` + `revalidate = 300` | Catálogo pequeño; ISR |
 | `/producto/[slug]` | `generateStaticParams` + `revalidate = 300` | SEO crítico; stock fresco suficiente |
-| `/carrito` | Dinámica (client) | Estado local del usuario |
+| `/checkout` | Shell estático + cuerpo client | Depende del carrito (localStorage). La mutación va por Server Action (Fase 6) |
+| `/pedido/[numero]` | Dinámica | Solo valida el formato del número; **no consulta la BD** (DEC-027: los números son adivinables) |
+| `/carrito` | Shell estático + cuerpo client | El estado vive en localStorage: el servidor no puede conocerlo. La página se prerenderiza vacía (título y layout) y `CartContents` la rellena tras hidratar (Fase 5) |
 | `/admin/**` | Dinámica siempre (`export const dynamic = 'force-dynamic'`) | Datos en tiempo real |
 
 Invalidación desde el admin (Server Actions):

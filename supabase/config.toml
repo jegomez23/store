@@ -1,8 +1,8 @@
-# Configuración para `supabase` CLI (desarrollo local). NO se pudo validar
-# contra una instalación real del CLI en este entorno (no disponible aquí —
-# ver limitación documentada en docs/context/CURRENT-STATE.md). Ajustar
-# `major_version` si difiere de la versión de Postgres del proyecto real
-# cuando se provisione.
+# Configuración para `supabase` CLI (stack local con Docker).
+# Validado en Fase 4.5 contra el proyecto Supabase real vía `supabase link`
+# + `supabase db push` (el stack LOCAL sigue sin probarse: este entorno no
+# tiene Docker). `major_version` alineada con la del proyecto real
+# (PostgreSQL 17.6) para que el stack local reproduzca producción.
 
 project_id = "yi-store"
 
@@ -15,7 +15,7 @@ max_rows = 1000
 
 [db]
 port = 54322
-major_version = 15
+major_version = 17
 
 [db.seed]
 enabled = true

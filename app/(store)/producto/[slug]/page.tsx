@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
 import { Divider } from "@/components/ui/Divider";
 import { RemoteImage } from "@/components/ui/RemoteImage";
-import { VariantPicker } from "@/components/store/VariantPicker";
-import { formatPrice } from "@/lib/money/format";
+import { AddToCartForm } from "@/components/store/cart/AddToCartForm";
 import { getAllProductSlugs, getProductBySlug } from "@/lib/data/products";
 import { getActiveMarket } from "@/lib/markets";
 
@@ -80,52 +78,17 @@ export default async function ProductPage(
             {product.name}
           </h1>
           <p className="text-sm text-gray-700">{product.shortDescription}</p>
-          <div className="flex items-center gap-2">
-            <span
-              className={`text-xl font-semibold ${
-                product.compareAtPrice ? "text-red" : "text-black"
-              }`}
-            >
-              {formatPrice(product.price, product.currencyCode, product.locale)}
-            </span>
-            {product.compareAtPrice ? (
-              <span className="text-sm text-gray-400 line-through">
-                {formatPrice(
-                  product.compareAtPrice,
-                  product.currencyCode,
-                  product.locale,
-                )}
-              </span>
-            ) : null}
-          </div>
         </div>
 
         <Divider />
 
-        <VariantPicker variants={product.variants} />
-
-        <div className="flex flex-col gap-3">
-          <Button
-            variant="primary"
-            disabled
-            aria-label="Comprar por WhatsApp (próximamente)"
-            className="w-full"
-          >
-            Comprar por WhatsApp
-          </Button>
-          <Button
-            variant="secondary"
-            disabled
-            aria-label="Añadir al carrito (próximamente)"
-            className="w-full"
-          >
-            Añadir al carrito
-          </Button>
-          <p className="text-xs text-gray-400">
-            Compra disponible próximamente — catálogo en construcción (Fase
-            4).
-          </p>
-        </div>
+        {/*
+          Precio, selección de variante, cantidad y "Añadir al carrito" viven
+          juntos en un único Client Component: son una sola interacción y
+          necesitan compartir la variante seleccionada. El resto de la ficha
+          sigue siendo Server Component.
+        */}
+        <AddToCartForm product={product} />
 
         <Divider />
 

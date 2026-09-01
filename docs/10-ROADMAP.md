@@ -69,7 +69,7 @@
 
 ---
 
-## FASE 5 — Carrito ⬜ PENDIENTE
+## FASE 5 — Carrito ✅ COMPLETADO
 
 **Objetivo:** carrito local robusto.
 **Tareas:** `lib/cart/` (contexto+reducer+persistencia) · drawer carrito + página `/carrito` · stepper cantidades con tope de stock · snapshot de precio/nombre · badge contador header · eliminar ítem · subtotal.
@@ -79,13 +79,15 @@
 
 ---
 
-## FASE 6 — WhatsApp Checkout ⬜ PENDIENTE
+## FASE 6 — WhatsApp Checkout ✅ COMPLETADO
 
 **Objetivo:** cierre de venta v1 completo.
 **Tareas:** interfaz `CheckoutChannel` + factory · Server Action de generación de pedido (transacción: order pending + items snapshot + customer upsert + decremento stock con guard) · `WhatsAppChannel` (mensaje según plantillas de `06-WHATSAPP.md` + wa.me) · CTA en ficha y carrito · página confirmación `/pedido/[numero]` · manejo errores tipados.
 **Dependencias:** Fases 4–5.
 **Entregable:** compra E2E real por WhatsApp con pedido registrado.
 **Aceptación:** pedido visible en admin como pending · mensaje exacto a plantilla con formato de moneda correcto · stock decrementado · caso "sin talla" bloquea CTA con microcopy inline.
+
+**Estado real (2026-09-01):** implementado y validado contra Supabase real (40 tests de integración con la anon key + 20 comprobaciones end-to-end). El pedido se crea con la función `create_order` (DEC-026), no con `service_role`. Desviaciones respecto al plan original: (a) **sin promociones** — no estaban en las tareas de esta fase y la regla "promoción más favorable" sigue pendiente de Juan; (b) la página `/pedido/[numero]` **no lee la BD** (DEC-027, evitar enumeración); (c) la compra desde la ficha pasa por `/checkout` en vez de duplicar el formulario de contacto.
 
 ---
 
@@ -112,7 +114,7 @@
 ## FASE 9 — Testing ⬜ PENDIENTE
 
 **Objetivo:** red de seguridad antes de producción. Nota (desde Fase 1, ver `docs/rules/testing.md`): los tests unitarios de lógica crítica (money, cart, mensajes WhatsApp, promociones, stock, pedidos) se escriben incrementalmente en la fase que introduce esa lógica; Fase 9 instala el runner formal y consolida integración + E2E, no es donde empieza el testing.
-**Tareas:** elegir runner (recomendado Vitest — decisión a registrar) · unitarios: money, cart reducer, buildOrderMessage, slugify, validaciones · integración: actions críticas contra BD dev · E2E mínimo (Playwright o similar): compra WhatsApp feliz + admin login.
+**Tareas:** ~~elegir runner~~ (resuelto en DEC-025: `node:test` nativo desde Fase 5; Fase 9 decide si hacen falta Vitest/Playwright para componentes y E2E) · unitarios: money, cart reducer, buildOrderMessage, slugify, validaciones · integración: actions críticas contra BD dev · E2E mínimo (Playwright o similar): compra WhatsApp feliz + admin login.
 **Dependencias:** Fases 4–7 estables.
 **Entregable:** suite en CI local (`npm test`).
 **Aceptación:** flujos críticos cubiertos · suite pasa en limpio · cobertura razonable de lógica pura (>80% en lib/).

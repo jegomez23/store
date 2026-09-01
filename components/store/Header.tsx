@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { CartIcon, CloseIcon, MenuIcon } from "@/components/ui/icons";
+import { CartCountBadge, useCartLinkLabel } from "@/components/store/cart/CartCount";
 import { Container } from "@/components/ui/Container";
 import type { CatalogCategory } from "@/lib/data/categories";
 
@@ -12,10 +13,12 @@ interface HeaderProps {
 
 /**
  * Header responsive: hamburguesa + drawer en móvil, nav horizontal en
- * desktop. El carrito es visual (sin carrito real todavía — Fase 5).
+ * desktop. Desde Fase 5 el icono de carrito enlaza a /carrito y muestra el
+ * número de unidades.
  */
 export function Header({ categories }: HeaderProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const cartLabel = useCartLinkLabel();
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -61,14 +64,14 @@ export function Header({ categories }: HeaderProps) {
           ))}
         </nav>
 
-        <button
-          type="button"
-          disabled
-          aria-label="Carrito (próximamente)"
-          className="flex h-11 w-11 items-center justify-center rounded-full text-black disabled:cursor-not-allowed disabled:opacity-40"
+        <Link
+          href="/carrito"
+          aria-label={cartLabel}
+          className="relative flex h-11 w-11 items-center justify-center rounded-full text-black transition-colors hover:bg-cream-dark"
         >
           <CartIcon />
-        </button>
+          <CartCountBadge className="absolute right-1 top-1" />
+        </Link>
       </Container>
 
       {isMenuOpen ? (

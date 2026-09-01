@@ -24,7 +24,7 @@ NEXT_PUBLIC_MARKET=ES
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ```
 
-> Nota (Fase 3): `NEXT_PUBLIC_MARKET` sigue sin ser leído por ningún código de aplicación (`lib/markets.ts` no existe todavía) — la variable está documentada/preparada, no consumida.
+> Nota (Fase 4.5): las cuatro variables `NEXT_PUBLIC_*` son consumidas realmente por la aplicación y están verificadas contra un proyecto Supabase real. `SUPABASE_SERVICE_ROLE_KEY` puede estar presente en `.env.local`, pero **ningún código de aplicación la lee todavía** (`lib/supabase/admin.ts` no existe; se creará en Fase 7).
 
 ### Reglas
 
@@ -64,17 +64,38 @@ npx tsc --noEmit     # chequeo de tipos
 
 Requisitos: Node.js ≥ 20.9 · npm ≥ 10.
 
-### Base de datos local (Fase 3)
+### Base de datos — proyecto Supabase REAL (flujo validado en Fase 4.5)
+
+Este es el flujo que se usó realmente para aplicar el esquema, y el único validado end-to-end. **No requiere Docker.**
 
 ```bash
-npm run db:start   # levanta Postgres/Studio local vía Supabase CLI (requiere Docker Desktop o Podman)
-npm run db:reset   # reaplica supabase/migrations/ + supabase/seed/*.sql desde cero
-npm run db:lint    # valida el esquema local (tipos, advertencias)
-npm run db:types   # genera lib/supabase/database.types.ts desde el esquema local
-npm run db:stop    # detiene los contenedores locales
+npx supabase login                                  # una vez por máquina (abre el navegador)
+npx supabase link --project-ref <project-ref>       # enlaza el repo con el proyecto remoto
+npm run db:push                                     # aplica supabase/migrations/ pendientes
+npm run db:push:seed                                # aplica migraciones + supabase/seed/*.sql
+npm run db:types                                    # genera types/database.types.ts desde el proyecto enlazado
 ```
 
-**Requiere Docker Desktop (o Podman) instalado y corriendo.** El CLI (`supabase`, devDependency) está instalado, pero estos comandos **no se pudieron ejecutar/validar en el entorno donde se escribieron las migraciones de Fase 3** (sin Docker/Podman disponible ahí) — las migraciones se revisaron manualmente pero no se aplicaron contra un Postgres real. Ejecuta `npm run db:reset` en tu máquina antes de confiar en ellas en producción.
+Notas operativas comprobadas:
+
+- `db:push` es incremental: registra lo aplicado en `supabase_migrations.schema_migrations` y no repite migraciones.
+- `db:push:seed` **omite los archivos de seed ya aplicados** (los rastrea por hash). Para forzar la reejecución de un seed concreto: `npx supabase db query --linked -f supabase/seed/04_products_es.sql`. El seed es idempotente, así que reejecutarlo es seguro (regla 18 de `docs/rules/database.md`).
+- `npx supabase db query --linked "<SQL>"` ejecuta SQL arbitrario contra el proyecto enlazado vía Management API — útil para inspeccionar el esquema real y las policies sin Docker ni contraseña de BD.
+- **Antes de aplicar nada a un proyecto que no esté vacío**, inspecciona su contenido primero (regla de la Fase 4.5: no se destruyen datos reales sin verificar qué contienen).
+
+### Base de datos local (Docker) — alternativa, SIN validar
+
+```bash
+npm run db:start       # levanta Postgres/Studio local vía Supabase CLI (requiere Docker Desktop o Podman)
+npm run db:reset       # reaplica supabase/migrations/ + supabase/seed/*.sql desde cero
+npm run db:lint        # valida el esquema local (tipos, advertencias)
+npm run db:types:local # genera types/database.types.ts desde el esquema local
+npm run db:stop        # detiene los contenedores locales
+```
+
+**Requiere Docker Desktop (o Podman) instalado y corriendo.** Este stack local **sigue sin probarse**: ningún entorno de desarrollo del proyecto ha tenido Docker hasta ahora. `supabase/config.toml` fija `major_version = 17` para reproducir la versión del proyecto real (PostgreSQL 17.6).
+
+> Los tipos generados viven en `types/database.types.ts` (`02-ARCHITECTURE.md` §estructura y `docs/rules/architecture.md` #7). Hasta Fase 4.5 el script `db:types` apuntaba por error a `lib/supabase/database.types.ts`; corregido.
 
 ---
 
@@ -82,10 +103,22 @@ npm run db:stop    # detiene los contenedores locales
 
 1. Clonar repo.
 2. `npm install`.
-3. Copiar `.env.example` → `.env.local` y rellenar con credenciales del proyecto Supabase dev (o de tu stack local, paso 4).
-4. (Opcional, recomendado) `npm run db:start && npm run db:reset` — requiere Docker. Aplica `supabase/migrations/` + seed ES.
-5. `npm run dev` → http://localhost:3000.
-6. Verificar lint+tsc: `npm run lint && npx tsc --noEmit`.
+3. Copiar `.env.example` → `.env.local` y rellenar con credenciales del proyecto Supabase dev.
+4. Aplicar esquema + seed: `npx supabase login && npx supabase link --project-ref <ref> && npm run db:push:seed` (flujo remoto, sin Docker). Alternativa con Docker: `npm run db:start && npm run db:reset`.
+5. `npm run db:types` → regenera `types/database.types.ts`.
+6. `npm run dev` → http://localhost:3000.
+7. Verificar lint+tsc+build: `npm run lint && npx tsc --noEmit && npm run build`.
+
+## 4.1. GitHub Secrets requeridos por CI
+
+`.github/workflows/ci.yml` necesita estos **repository secrets** (Settings → Secrets and variables → Actions). Sin ellos el workflow falla en el paso de preflight con un mensaje explícito (DEC-021):
+
+| Secret | Valor |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase con `supabase/migrations/` aplicadas |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon key de ese mismo proyecto |
+
+`NEXT_PUBLIC_MARKET` y `NEXT_PUBLIC_SITE_URL` van en claro en el workflow (no son secretos). **Configuración externa pendiente:** estos dos secrets siguen sin crearse — es una acción manual en GitHub, fuera de este repo.
 
 ---
 

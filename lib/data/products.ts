@@ -1,34 +1,50 @@
 import { cache } from "react";
+import type { QueryData } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/static";
 import type { ActiveMarket } from "@/lib/markets";
 
 const IMAGES_BUCKET = "products";
 
-interface RawImage {
-  url: string;
-  alt_text: string;
-  is_primary: boolean;
-  sort_order: number;
+/**
+ * Selects declarados una sola vez: `QueryData<typeof query>` deriva los tipos
+ * de fila del esquema real (`types/database.types.ts`, generado con
+ * `npm run db:types`). No se declaran interfaces "Raw*" a mano — la
+ * cardinalidad de los embeds (array vs objeto|null) la infiere postgrest-js
+ * a partir de las FKs, que es justo lo que se quiere representar.
+ */
+const LIST_SELECT =
+  "slug, name, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
+
+const DETAIL_SELECT =
+  "id, slug, name, short_description, description, materials, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
+
+function listQuery(supabase: ReturnType<typeof createClient>, marketId: string) {
+  return supabase
+    .from("products")
+    .select(LIST_SELECT)
+    .eq("market_id", marketId)
+    .eq("status", "active")
+    .is("deleted_at", null);
 }
 
-interface RawVariant {
-  id: string;
-  price: number;
-  compare_at_price: number | null;
-  stock: number;
-  is_active: boolean;
-  // Sin Database types generados, postgrest-js no puede inferir la
-  // cardinalidad real de estos embeds (many-to-one) y a veces los tipa como
-  // array — normalizado en tiempo de ejecución vía `oneOrNull()`.
-  colors: { name: string; hex_code: string } | { name: string; hex_code: string }[] | null;
-  sizes: { label: string; size_group: string } | { label: string; size_group: string }[] | null;
+function detailQuery(
+  supabase: ReturnType<typeof createClient>,
+  marketId: string,
+  slug: string,
+) {
+  return supabase
+    .from("products")
+    .select(DETAIL_SELECT)
+    .eq("market_id", marketId)
+    .eq("slug", slug)
+    .eq("status", "active")
+    .is("deleted_at", null);
 }
 
-/** Normaliza un embed de Supabase que puede llegar como objeto o array de 1. */
-function oneOrNull<T>(value: T | T[] | null | undefined): T | null {
-  if (value == null) return null;
-  return Array.isArray(value) ? (value[0] ?? null) : value;
-}
+type ProductListRow = QueryData<ReturnType<typeof listQuery>>[number];
+type ProductDetailRow = QueryData<ReturnType<typeof detailQuery>>[number];
+type ImageRow = ProductListRow["product_images"][number];
+type VariantRow = ProductListRow["product_variants"][number];
 
 export interface CatalogProduct {
   slug: string;
@@ -53,6 +69,8 @@ export interface ProductVariantOption {
 }
 
 export interface CatalogProductDetail {
+  /** `products.id` — necesario para las líneas del carrito (Fase 5). */
+  id: string;
   slug: string;
   name: string;
   shortDescription: string | null;
@@ -75,14 +93,14 @@ function resolveImageUrl(
   return supabase.storage.from(IMAGES_BUCKET).getPublicUrl(path).data.publicUrl;
 }
 
-function pickPrimaryImage(images: RawImage[]): RawImage | undefined {
+function pickPrimaryImage(images: ImageRow[]): ImageRow | undefined {
   return (
     images.find((image) => image.is_primary) ??
     [...images].sort((a, b) => a.sort_order - b.sort_order)[0]
   );
 }
 
-function cheapestActiveVariant(variants: RawVariant[]): RawVariant | undefined {
+function cheapestActiveVariant(variants: VariantRow[]): VariantRow | undefined {
   return variants
     .filter((variant) => variant.is_active)
     .sort((a, b) => a.price - b.price)[0];
@@ -113,15 +131,8 @@ export const getFeaturedProducts = cache(
   async (market: ActiveMarket, limit = 4): Promise<CatalogProduct[]> => {
     const supabase = createClient();
 
-    const { data, error } = await supabase
-      .from("products")
-      .select(
-        "slug, name, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))",
-      )
-      .eq("market_id", market.id)
-      .eq("status", "active")
+    const { data, error } = await listQuery(supabase, market.id)
       .eq("is_featured", true)
-      .is("deleted_at", null)
       .order("created_at", { ascending: false })
       .limit(limit);
 
@@ -130,10 +141,10 @@ export const getFeaturedProducts = cache(
     }
 
     return (data ?? []).flatMap((product) => {
-      const cheapest = cheapestActiveVariant(product.product_variants as RawVariant[]);
+      const cheapest = cheapestActiveVariant(product.product_variants);
       if (!cheapest) return [];
 
-      const primaryImage = pickPrimaryImage(product.product_images as RawImage[]);
+      const primaryImage = pickPrimaryImage(product.product_images);
 
       return [
         {
@@ -161,16 +172,7 @@ export const getProductBySlug = cache(
   async (market: ActiveMarket, slug: string): Promise<CatalogProductDetail | null> => {
     const supabase = createClient();
 
-    const { data, error } = await supabase
-      .from("products")
-      .select(
-        "slug, name, short_description, description, materials, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))",
-      )
-      .eq("market_id", market.id)
-      .eq("slug", slug)
-      .eq("status", "active")
-      .is("deleted_at", null)
-      .maybeSingle();
+    const { data, error } = await detailQuery(supabase, market.id, slug).maybeSingle();
 
     if (error) {
       throw new Error(`No se pudo cargar el producto "${slug}": ${error.message}`);
@@ -178,14 +180,13 @@ export const getProductBySlug = cache(
 
     if (!data) return null;
 
-    const rawVariants = data.product_variants as RawVariant[];
-    const activeVariants = rawVariants.filter((variant) => variant.is_active);
-    const cheapest = cheapestActiveVariant(rawVariants);
+    const product: ProductDetailRow = data;
+    const activeVariants = product.product_variants.filter((variant) => variant.is_active);
+    const cheapest = cheapestActiveVariant(product.product_variants);
 
     if (activeVariants.length === 0 || !cheapest) return null;
 
-    const images = (data.product_images as RawImage[])
-      .slice()
+    const images = [...product.product_images]
       .sort((a, b) => a.sort_order - b.sort_order)
       .map((image) => ({
         url: resolveImageUrl(supabase, image.url),
@@ -193,26 +194,23 @@ export const getProductBySlug = cache(
       }));
 
     return {
-      slug: data.slug,
-      name: data.name,
-      shortDescription: data.short_description,
-      description: data.description,
-      materials: data.materials,
-      isNew: data.is_new,
+      id: product.id,
+      slug: product.slug,
+      name: product.name,
+      shortDescription: product.short_description,
+      description: product.description,
+      materials: product.materials,
+      isNew: product.is_new,
       images,
-      variants: activeVariants.map((variant) => {
-        const color = oneOrNull(variant.colors);
-        const size = oneOrNull(variant.sizes);
-        return {
-          id: variant.id,
-          colorName: color?.name ?? null,
-          colorHex: color?.hex_code ?? null,
-          sizeLabel: size?.label ?? null,
-          price: variant.price,
-          compareAtPrice: variant.compare_at_price,
-          stock: variant.stock,
-        };
-      }),
+      variants: activeVariants.map((variant) => ({
+        id: variant.id,
+        colorName: variant.colors?.name ?? null,
+        colorHex: variant.colors?.hex_code ?? null,
+        sizeLabel: variant.sizes?.label ?? null,
+        price: variant.price,
+        compareAtPrice: variant.compare_at_price,
+        stock: variant.stock,
+      })),
       price: cheapest.price,
       compareAtPrice: cheapest.compare_at_price,
       currencyCode: market.currencyCode,

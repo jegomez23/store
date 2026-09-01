@@ -22,11 +22,37 @@ jobs:
 
       - run: npx tsc --noEmit
 
-      # Desde Fase 4, Home y /producto/[slug] usan generateStaticParams +
-      # fetch real a Supabase en build-time (docs/02-ARCHITECTURE.md §3):
-      # el build FALLA sin un proyecto Supabase real y accesible con las
-      # migraciones/seed de supabase/ aplicadas. Configurar como repo
-      # secrets antes de que este workflow pueda pasar en verde.
+      # Tests de lógica pura (lib/): runner nativo de Node, sin dependencias
+      # (DEC-025). No necesitan Supabase ni secrets, por eso van antes del
+      # preflight: si el reducer del carrito se rompe, el fallo es claro y no
+      # queda enmascarado por un problema de configuración.
+      - run: npm test
+
+      # Preflight: desde Fase 4 el build hace fetch real a Supabase en
+      # build-time (generateStaticParams + páginas estáticas, DEC-021), así que
+      # sin secrets el paso siguiente falla con un error de red poco claro.
+      # Este check falla antes y explica exactamente qué falta. Solo comprueba
+      # PRESENCIA: nunca imprime los valores.
+      - name: Check required Supabase secrets are configured
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          missing=""
+          [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] || missing="$missing NEXT_PUBLIC_SUPABASE_URL"
+          [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] || missing="$missing NEXT_PUBLIC_SUPABASE_ANON_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Faltan GitHub Secrets:$missing"
+            echo "Configúralos en Settings > Secrets and variables > Actions."
+            echo "Deben apuntar a un proyecto Supabase con supabase/migrations aplicadas."
+            echo "Ver docs/11-ENVIRONMENT.md y DEC-021."
+            exit 1
+          fi
+          echo "Secrets presentes (valores no impresos)."
+
+      # El build FALLA sin un proyecto Supabase real y accesible con las
+      # migraciones/seed de supabase/ aplicadas (DEC-021, decisión deliberada:
+      # no se degrada a force-dynamic para ocultar la dependencia).
       - run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}

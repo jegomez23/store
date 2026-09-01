@@ -22,14 +22,18 @@
 10. Patrón estándar: SELECT público restringido a registros publicados/activos + policy admin vía `is_admin()`.
 11. Tablas privadas (`orders`, `order_items`, `order_events`, `customers`): SIN select público, sin excepciones.
 12. Probar siempre las policies con ambos roles (anon y admin) antes de dar la migración por terminada.
+13. Si la tabla tiene `market_id` y lectura pública, la policy debe incluir `public.is_active_market(market_id)` (DEC-022): un mercado inactivo no expone su catálogo.
+14. Toda tabla nueva de `public` debe repetir `revoke truncate, trigger on <tabla> from anon, authenticated` en su propia migración (DEC-023): RLS no filtra esos dos privilegios.
 
 ## Datos
 
-13. Seed inicial (`supabase/seed/`) para mercados, colores, tallas. Datos comerciales reales entran por admin, no por seed.
-14. Sin datos inventados en commits: placeholders marcados `[PENDIENTE]`.
-15. Cambios de esquema → actualizar `03-DATABASE.md` y `DOMAIN-MODEL.md` si afecta conceptos, en la misma tarea.
+15. Seed inicial (`supabase/seed/`) para mercados, colores, tallas. Datos comerciales reales entran por admin, no por seed.
+16. Sin datos inventados en commits: placeholders marcados `[PENDIENTE]`.
+17. Cambios de esquema → actualizar `03-DATABASE.md` y `DOMAIN-MODEL.md` si afecta conceptos, en la misma tarea.
+18. El seed debe ser **idempotente**: reejecutarlo entero no puede fallar ni duplicar filas (`on conflict do nothing` donde haya constraint; `insert ... select ... where not exists` donde no la haya). Validado en Fase 4.5 reejecutando los 6 archivos contra el proyecto real.
+19. Las rutas de imagen guardadas en BD (`product_images.url`, `categories.image_url`, ...) son **relativas al bucket**, sin repetir su nombre: `getPublicUrl()` ya antepone el bucket. Guardar `products/x.jpg` en el bucket `products` produce una URL rota `.../products/products/x.jpg` (bug real corregido en Fase 4.5).
 
 ## Cliente Supabase
 
-16. Service role SOLO dentro de `lib/supabase/admin.ts` con `import 'server-only'`. Prohibido en componentes, actions de cliente o cualquier bundle cliente.
-17. El cliente browser/anon jamás ejecuta escrituras: las escrituras pasan por Server Actions (que usan cliente autenticado o service role según corresponda).
+20. Service role SOLO dentro de `lib/supabase/admin.ts` con `import 'server-only'`. Prohibido en componentes, actions de cliente o cualquier bundle cliente.
+21. El cliente browser/anon jamás ejecuta escrituras: las escrituras pasan por Server Actions (que usan cliente autenticado o service role según corresponda).
