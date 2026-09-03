@@ -197,8 +197,13 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
         category_id: categoryId,
         name: `FIXTURE ${slug}`,
         slug,
-        status: opts.productStatus ?? "active",
-        deleted_at: opts.productDeleted ? new Date().toISOString() : null,
+        // Nace SIEMPRE en borrador y sin borrar. El estado y el borrado lógico
+        // que pide el test se aplican al final, cuando la variante ya existe:
+        // desde la migración 0031, confirmar un producto publicado sin ninguna
+        // variante activa lanza NO_ACTIVE_VARIANT. Es además el orden real del
+        // panel (crear → variantes → publicar).
+        status: "draft",
+        deleted_at: null,
       }),
     });
     const productId = (productRes.body as { id: string }[])[0].id;
@@ -219,6 +224,50 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     });
     const variantId = (variantRes.body as { id: string }[])[0].id;
     created.variantIds.push(variantId);
+
+    /*
+      Ahora sí: el estado y el borrado que pedía el test.
+
+      El caso "publicado con variante INACTIVA" merece explicación, porque el
+      trigger impide crearlo de golpe: se publica con la variante activa y se
+      desactiva después. No es un rodeo del test — es el ÚNICO camino por el
+      que ese estado se alcanza en producción, porque nada despubica
+      automáticamente al desactivar la última variante.
+    */
+    const wantedStatus = opts.productStatus ?? "active";
+    const variantActive = opts.variantActive ?? true;
+
+    if (wantedStatus === "active") {
+      if (!variantActive) {
+        await admin(`product_variants?id=eq.${variantId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: true }),
+        });
+      }
+      await admin(`products?id=eq.${productId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "active" }),
+      });
+      if (!variantActive) {
+        await admin(`product_variants?id=eq.${variantId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: false }),
+        });
+      }
+    } else if (wantedStatus !== "draft") {
+      await admin(`products?id=eq.${productId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: wantedStatus }),
+      });
+    }
+
+    if (opts.productDeleted) {
+      await admin(`products?id=eq.${productId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ deleted_at: new Date().toISOString() }),
+      });
+    }
+
     return variantId;
   }
 
@@ -449,7 +498,8 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
               category_id: catCo,
               name: "FIXTURE CO",
               slug: `fx-co-${Math.random().toString(36).slice(2, 8)}`,
-              status: "active",
+              // Borrador primero; se publica al final, ya con su variante.
+              status: "draft",
             }),
           })
         ).body as { id: string }[]
@@ -472,12 +522,22 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
         ).body as { id: string }[]
       )[0].id;
 
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
-      assert.equal(errorCode(result.body), "WRONG_MARKET");
+      // `finally`: la limpieza de estos fixtures estaba suelta al final del
+      // test, así que un fallo antes de llegar ahí dejaba la categoría de CO
+      // huérfana en la base. Ocurrió de verdad durante la Fase 9.5.
+      try {
+        await admin(`products?id=eq.${productId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "active" }),
+        });
 
-      await admin(`product_variants?id=eq.${variantId}`, { method: "DELETE" });
-      await admin(`products?id=eq.${productId}`, { method: "DELETE" });
-      await admin(`categories?id=eq.${catCo}`, { method: "DELETE" });
+        const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
+        assert.equal(errorCode(result.body), "WRONG_MARKET");
+      } finally {
+        await admin(`product_variants?id=eq.${variantId}`, { method: "DELETE" });
+        await admin(`products?id=eq.${productId}`, { method: "DELETE" });
+        await admin(`categories?id=eq.${catCo}`, { method: "DELETE" });
+      }
     });
 
     test("mercado inactivo -> MARKET_UNAVAILABLE", async () => {

@@ -13,10 +13,10 @@ const IMAGES_BUCKET = "products";
  * a partir de las FKs, que es justo lo que se quiere representar.
  */
 const LIST_SELECT =
-  "slug, name, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
+  "slug, name, is_new, product_images(url, alt_text, is_primary, sort_order, blur_data_url), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
 
 const DETAIL_SELECT =
-  "id, slug, name, short_description, description, materials, is_new, product_images(url, alt_text, is_primary, sort_order), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
+  "id, slug, name, short_description, description, materials, is_new, meta_title, meta_description, product_images(url, alt_text, is_primary, sort_order, blur_data_url), product_variants(id, price, compare_at_price, stock, is_active, colors(name, hex_code), sizes(label, size_group))";
 
 function listQuery(supabase: ReturnType<typeof createClient>, marketId: string) {
   return supabase
@@ -52,6 +52,8 @@ export interface CatalogProduct {
   isNew: boolean;
   imageUrl: string | null;
   imageAlt: string;
+  /** Placeholder blur del servidor (Fase 9); `null` si la imagen es anterior. */
+  imageBlurDataUrl: string | null;
   price: number;
   compareAtPrice: number | null;
   currencyCode: string;
@@ -77,7 +79,11 @@ export interface CatalogProductDetail {
   description: string | null;
   materials: string | null;
   isNew: boolean;
-  images: { url: string | null; alt: string }[];
+  /** `products.meta_title` — fallback a `name` lo hace la página. */
+  metaTitle: string | null;
+  /** `products.meta_description` — fallback en la página. */
+  metaDescription: string | null;
+  images: { url: string | null; alt: string; blurDataUrl: string | null }[];
   variants: ProductVariantOption[];
   price: number;
   compareAtPrice: number | null;
@@ -113,16 +119,68 @@ export const getAllProductSlugs = cache(
 
     const { data, error } = await supabase
       .from("products")
-      .select("slug")
+      // `product_variants!inner` + `is_active`: exige que exista AL MENOS UNA
+      // variante activa. Sin esto se prerenderizaban fichas que devuelven 404,
+      // porque `getProductBySlug` retorna null en ese caso (Fase 9.5, 5B).
+      .select("slug, product_variants!inner(id)")
       .eq("market_id", market.id)
       .eq("status", "active")
-      .is("deleted_at", null);
+      .is("deleted_at", null)
+      .eq("product_variants.is_active", true);
 
     if (error) {
       throw new Error(`No se pudieron listar los productos: ${error.message}`);
     }
 
     return (data ?? []).map((row) => row.slug);
+  },
+);
+
+export interface SitemapProduct {
+  slug: string;
+  lastModified: string;
+}
+
+/**
+ * Entradas de producto del sitemap (Fase 9).
+ *
+ * Los MISMOS filtros que la ficha pública: mercado, `status = 'active'`,
+ * `deleted_at is null` **y al menos una variante activa**. Además RLS (DEC-022)
+ * ya exige mercado activo, así que hay dos barreras, no una.
+ *
+ * ⚠️ CORRECCIÓN DE FASE 9.5 (5B): esta última condición faltaba, y el comentario
+ * afirmaba "los mismos filtros que la ficha pública" cuando no lo eran. La
+ * ficha devuelve 404 sin variantes activas (`getProductBySlug` retorna null),
+ * así que el sitemap estaba mandando a Google exactamente al 404 que este
+ * comentario decía evitar. Reproducido sobre el build servido: **2 de 8 URLs
+ * del sitemap respondían 404**. El stock NO entra aquí: un producto agotado se
+ * muestra como "Agotado" y su ficha responde 200, que es lo previsto.
+ *
+ * No se listan variantes ni categorías: `/categoria/[slug]` no existe todavía
+ * como ruta (`docs/09-SEO-PERFORMANCE.md` §1 la describe, `app/` no la
+ * implementa).
+ */
+export const getSitemapProducts = cache(
+  async (market: ActiveMarket): Promise<SitemapProduct[]> => {
+    const supabase = createClient();
+
+    const { data, error } = await supabase
+      .from("products")
+      .select("slug, updated_at, product_variants!inner(id)")
+      .eq("market_id", market.id)
+      .eq("status", "active")
+      .is("deleted_at", null)
+      .eq("product_variants.is_active", true)
+      .order("updated_at", { ascending: false });
+
+    if (error) {
+      throw new Error(`No se pudo generar el sitemap: ${error.message}`);
+    }
+
+    return (data ?? []).map((row) => ({
+      slug: row.slug,
+      lastModified: row.updated_at,
+    }));
   },
 );
 
@@ -153,6 +211,7 @@ export const getFeaturedProducts = cache(
           isNew: product.is_new,
           imageUrl: resolveImageUrl(supabase, primaryImage?.url),
           imageAlt: primaryImage?.alt_text ?? product.name,
+          imageBlurDataUrl: primaryImage?.blur_data_url ?? null,
           price: cheapest.price,
           compareAtPrice: cheapest.compare_at_price,
           currencyCode: market.currencyCode,
@@ -191,6 +250,7 @@ export const getProductBySlug = cache(
       .map((image) => ({
         url: resolveImageUrl(supabase, image.url),
         alt: image.alt_text,
+        blurDataUrl: image.blur_data_url,
       }));
 
     return {
@@ -201,6 +261,8 @@ export const getProductBySlug = cache(
       description: product.description,
       materials: product.materials,
       isNew: product.is_new,
+      metaTitle: product.meta_title,
+      metaDescription: product.meta_description,
       images,
       variants: activeVariants.map((variant) => ({
         id: variant.id,

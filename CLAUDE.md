@@ -53,9 +53,17 @@ Restricciones transversales: `docs/context/KNOWN-CONSTRAINTS.md`. Historial: `do
 
 ## Estado del proyecto
 
-FASE 6 completada (checkout real por WhatsApp: pedido creado en Supabase con precio y stock resueltos en PostgreSQL, idempotente y sin overselling). `npm run lint`, `npx tsc --noEmit`, `npm test` (227) y `npm run build` pasan. Próxima: FASE 7 — Administrador (los pedidos ya se crean pero aún no hay panel para verlos). Detalle: `docs/context/CURRENT-STATE.md` y `docs/10-ROADMAP.md`.
+FASE 9 completada salvo la auditoría CWV: la tienda **se puede operar, llenar e indexar**. Fase 7 dio auth de admin y el panel de pedidos; Fase 8 el CMS; Fase 9 el SEO (`robots.ts`, `sitemap.ts`, metadata canónica, Open Graph, JSON-LD), el placeholder blur generado en servidor y una **matriz de invalidación medida**. `npm run lint`, `npx tsc --noEmit`, `npm test` (438) y `npm run build` pasan.
+
+**NO implementado todavía** (no confundir con hecho): promociones, imágenes de home/logo, reset de contraseña, `lib/i18n/`, invalidación por tags, `/categoria/[slug]`, redirect 301 al cambiar slug, CSP/HSTS y el backfill del blur de las 4 imágenes del seed. **Los Core Web Vitals NO están medidos: no hay navegador en este entorno.** Detalle exacto: `docs/context/CURRENT-STATE.md` y `docs/10-ROADMAP.md`.
 
 > **Checkout (Fase 6): el cliente NUNCA es autoridad de precio ni de stock.** El pedido lo crea `public.create_order` (migración `0018`), no `service_role`. Antes de tocar nada del checkout, lee `docs/context/AI-DEVELOPMENT.md` §10.
+
+> **Admin (Fase 7): proxy = mantener la sesión viva · layout = quién eres · Server Action = qué puedes · RLS = lo impide aunque todo lo anterior falle.** `proxy.ts` NO comprueba el rol y no debe hacerlo. En RSC el layout no impide que la página hermana se renderice, así que **cada función de `lib/data/admin/` lleva su propio `requireAdmin()`**. La máquina de estados del pedido vive en `public.admin_update_order_status` (migración `0019`), no en TypeScript. Antes de tocar el panel, lee `docs/context/AI-DEVELOPMENT.md` §11 y §12.
+
+> **CMS (Fase 8): `market_id` nunca viene del formulario, y RLS solo deja escribir en mercados ACTIVOS (DEC-035).** Las imágenes se validan por **magic bytes** —no por `File.type` ni por `allowed_mime_types`, que confían en el cliente— y `sharp` las re-codifica a WebP: un objeto por foto, ×13,2 menos espacio (DEC-036). **La invalidación se hace por RUTA LITERAL**: el patrón `'/producto/[slug]'` no invalida nada y dejaba comprables productos despublicados (DEC-037). Antes de tocar el CMS, lee `docs/context/AI-DEVELOPMENT.md` §13.
+
+> **SEO y caché (Fase 9): la invalidación tiene una MATRIZ, y vive en la cabecera de `lib/admin/revalidate.ts` (DEC-041).** Ficha concreta → ruta literal; algo global (categorías, ajustes) → `revalidatePath('/', 'layout')`; toda mutación de producto invalida además `/sitemap.xml`. **Prohibido `revalidatePath` con un patrón `[segmento]`**: no invalida lo prerenderizado, y hay un test que lo comprueba en todo el repositorio. El sitemap y el breadcrumb solo describen rutas que EXISTEN (DEC-039). El `blur_data_url` lo genera SIEMPRE el servidor, nunca el navegador (DEC-040). `robots.txt` **no es seguridad**. Antes de tocar SEO o caché, lee `docs/context/AI-DEVELOPMENT.md` §14.
 
 > Tras cualquier migración nueva: `npm run db:push` y **regenerar `types/database.types.ts` con `npm run db:types`** (los tipos generados son la fuente de verdad del data layer; no re-declarar tipos de fila a mano).
 

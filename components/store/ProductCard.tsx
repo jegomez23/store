@@ -15,7 +15,11 @@ export function ProductCard({ product }: ProductCardProps) {
       className="group flex flex-col gap-3 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
     >
       <div className="relative">
-        <RemoteImage src={product.imageUrl} alt={product.imageAlt} />
+        <RemoteImage
+          src={product.imageUrl}
+          alt={product.imageAlt}
+          blurDataURL={product.imageBlurDataUrl}
+        />
         {product.isNew ? (
           <Badge tone="accent" className="absolute left-2 top-2">
             Nuevo

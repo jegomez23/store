@@ -2,7 +2,17 @@
 
 > Modelo de seguridad completo. Principio rector (DEC-009): **la seguridad vive en la base de datos (RLS), no en ocultar rutas**.
 >
-> **Estado real:** §4 (RLS) y §6 (Storage) están **implementados y VALIDADOS CONTRA EL PROYECTO SUPABASE REAL** (Fase 4.5, 2026-09-01). §2 (Auth), §3 (autorización en capas 1-3) y §5 (protección de rutas / `proxy.ts`) siguen **sin implementar** — se construyen en Fase 7 junto al panel admin; la Fase 3 dejó preparada la tabla `profiles` + `is_admin()` (capa 4, la definitiva) y la Fase 4.5 comprobó que esa capa funciona de verdad.
+> **Estado real (Fase 7, 2026-09-02): §2, §3, §4, §5 y §7 están IMPLEMENTADOS y VALIDADOS CONTRA EL PROYECTO SUPABASE REAL.** §6 (Storage) sigue validado desde Fase 4.5 pero **sin uso**: el panel no sube imágenes todavía, y los buckets siguen sin `file_size_limit`/`allowed_mime_types`.
+>
+> **Validación de Fase 7** (sobre el build de producción servido con `next start`, contra la instancia real, con un admin, un autenticado sin rol y anónimo — todos los usuarios de prueba creados y eliminados):
+> - **39 comprobaciones de RLS** con controles positivos de admin: anon y authenticated-sin-rol no leen ni una fila de `orders`/`order_items`/`order_events`/`customers`/`order_counters`, no mutan pedidos, no tocan catálogo ni stock, no pueden autoelevarse a admin y no leen perfiles ajenos. El admin sí puede todo lo necesario. `order_events` sigue siendo append-only **incluso para el admin** (UPDATE y DELETE rechazados).
+> - **38 comprobaciones de sesión**, incluido el caso que motivó DEC-031: token marcado como caducado → la respuesta trae `Set-Cookie` con un `access_token` distinto y la siguiente request mantiene la sesión.
+> - **78 comprobaciones end-to-end del panel**, incluidas invocaciones **directas a una Server Action sin pasar por la UI y sin JavaScript** (reproduciendo el `$ACTION_REF`/`$ACTION_n:0` de progressive enhancement): con **control positivo** —el admin sí muta por ese camino— y comprobando que un autenticado sin rol y un anónimo no mutan nada.
+> - **28 tests de integración** de la máquina de estados y la devolución de stock.
+> - **0 ocurrencias** de la service role key (ni de su nombre de variable) en los 466 archivos del build; 0 en `.next/static/`. `lib/supabase/admin.ts` sigue sin existir.
+> - Dos debilidades reales corregidas: la cookie de sesión **no era `httpOnly`** (default de `@supabase/ssr`) y el guard del layout **no impedía que la página hermana se renderizase** en RSC. Ninguna policy se debilitó.
+>
+> **Validación previa de Fase 4.5** (sigue vigente):
 >
 > **Resultado de la validación de Fase 4.5** (ejecutada contra la instancia real con anon key, un usuario autenticado sin rol y un admin temporal creado y eliminado durante la prueba):
 > - **anon** lee el catálogo público permitido y **no obtiene ni una fila** de `customers`, `orders`, `order_items`, `order_events` ni `profiles`. Todos sus INSERT fueron rechazados (401/403, `42501`); UPDATE y DELETE afectaron 0 filas. Recuento de filas idéntico antes y después de la batería de escritura.
@@ -25,6 +35,13 @@
 | XSS vía contenido admin | React escapa por defecto; sin `dangerouslySetInnerHTML` salvo revisión |
 | Enumeración de slugs/rutas | Respuestas 404 uniformes; sin filtración de existencia |
 | Enumeración de pedidos por número | `order_number` es correlativo y adivinable (DEC-027), así que **no existe ningún endpoint que devuelva un pedido por su número**. `/pedido/[numero]` no consulta la BD: pinta lo que dejó el propio checkout en `sessionStorage` |
+| Admin manipulando el estado de un pedido | El cliente solo propone `order_id`, estado y nota. `admin_update_order_status` (0019) valida la transición con la fila bloqueada; `paid` exige `p_payment_confirmed`; `delivered`/`cancelled` son terminales (DEC-032) |
+| Devolución doble de stock al cancelar | La cancelación solo procede desde un estado no cancelado y con `select … for update`; verificado con 10 cancelaciones simultáneas (DEC-033) |
+| Robo de la sesión del admin por XSS | Cookie de sesión forzada a `httpOnly` en `lib/supabase/cookies.ts` (la librería trae `httpOnly: false`) — DEC-031 |
+| Open redirect desde `/admin/login?next=` | `safeAdminRedirect()`: solo rutas internas de `/admin` |
+| Un admin escribiendo en un mercado no lanzado | Las policies de admin de catálogo y contenido exigen `is_active_market(market_id)` en USING y WITH CHECK (DEC-035). Verificado: crear en CO y mover un producto de ES a CO son rechazados por PostgreSQL |
+| Subida de un archivo malicioso disfrazado de imagen | Validación por **magic bytes**, no por `File.type` ni por `allowed_mime_types` (ambos confían en lo que declara el cliente); `sharp` re-codifica, así que el objeto del bucket lo genera el servidor (DEC-036). SVG excluido a propósito |
+| Escritura en la carpeta de otro producto | La ruta la compone el servidor con el slug leído de la BD, y el borrado comprueba pertenencia antes de tocar Storage |
 | Manipulación del carrito en localStorage | El checkout ignora precio y stock del cliente: `create_order` los resuelve en PostgreSQL (DEC-026) |
 | Pedidos duplicados por doble clic/recarga | Idempotencia garantizada por un índice UNIQUE en BD, no por el estado del botón (DEC-028) |
 
@@ -32,14 +49,18 @@
 
 ## 2. Autenticación
 
-- Proveedor: **Supabase Auth** (email + contraseña).
-- Sesión: JWT en cookie httpOnly gestionada por `@supabase/ssr` (cookies async en Next 16).
+- Proveedor: **Supabase Auth** (email + contraseña). Implementado en Fase 7: `/admin/login`.
+- Sesión: JWT en cookie gestionada por `@supabase/ssr` (cookies async en Next 16).
+- **`httpOnly` es nuestro, no de la librería.** `@supabase/ssr` trae `httpOnly: false` en sus `DEFAULT_COOKIE_OPTIONS` (su cliente de navegador necesita leer la cookie) y **no** marca `Secure` en absoluto. Se comprobó sirviendo el build: la cabecera llegaba sin `HttpOnly`. `lib/supabase/cookies.ts` fuerza `httpOnly: true` y deriva `Secure` del protocolo de `NEXT_PUBLIC_SITE_URL`; lo aplican `server.ts` y `proxy.ts`. Es posible porque el panel es 100% server-side. Ver DEC-031.
 - Clientes:
-  - `lib/supabase/server.ts` → componentes/actions (lee cookies del request).
-  - `lib/supabase/browser.ts` → interacciones client-side.
-  - `lib/supabase/admin.ts` → service role. **Solo importable desde código de servidor** (patrón `server-only`).
-- Alta de admins: manual (SQL o dashboard Supabase). No hay self-signup hacia roles.
-- Logout: revoca sesión y limpia cookies.
+  - `lib/supabase/server.ts` → componentes/actions (lee cookies del request, anon key + sesión).
+  - `lib/supabase/proxy.ts` → renovación de sesión dentro de `proxy.ts` (anon key).
+  - `lib/supabase/static.ts` → lecturas públicas sin cookies (catálogo, checkout).
+  - `lib/supabase/browser.ts` → interacciones client-side. **Sin consumidor real**; el panel no lo usa.
+  - `lib/supabase/admin.ts` → service role. **NO EXISTE**: ninguna ruta de la aplicación la necesita (DEC-026, DEC-034). Si algún día se creara, debe llevar `import 'server-only'`.
+- Alta de admins: manual (SQL o dashboard Supabase). No hay self-signup hacia roles ni UI de registro (DEC-020).
+- Logout: `logoutAction` revoca la sesión en Supabase y limpia cookies (solo posible desde una Server Action).
+- Autenticarse **no** es autorizarse: tras un login correcto se comprueba `is_admin()` y, si la cuenta no lo es, se cierra la sesión inmediatamente. Los mensajes de error del login son genéricos a propósito (no permiten enumerar cuentas).
 
 ---
 
@@ -51,13 +72,22 @@ v1: un único rol `admin` en `profiles.role`. El esquema admite añadir `editor`
 ### Verificación en capas
 
 ```
-1. proxy.ts            → ¿hay cookie de sesión? NO → redirect /admin/login   (optimista, UX)
-2. app/admin/layout    → getUser() válido Y profiles.role='admin'            (real, obligatoria)
-3. Server Actions      → re-verifican sesión+rol antes de CADA mutación       (real, obligatoria)
-4. RLS PostgreSQL      → última barrera aunque todo lo anterior falle         (real, definitiva)
+1. proxy.ts                    → MANTIENE LA SESIÓN VIVA (refresh + cookies) y,
+                                 si no hay sesión, redirige al login        (UX)
+2. app/admin/(panel)/layout    → getUser() + is_admin(): QUIÉN eres          (real, obligatoria)
+3. Server Actions              → re-verifican en CADA mutación: QUÉ puedes   (real, obligatoria)
+4. RLS PostgreSQL              → lo impide aunque todo lo anterior falle     (real, definitiva)
 ```
 
 Regla: las capas 1–2 son UX/rendimiento; la autoridad es 3–4. Ninguna acción confía solo en el frontend.
+
+**La capa 1 no comprueba el rol y no debe hacerlo** (DEC-031). `proxy.ts` existe porque un Server Component no puede escribir cookies y alguien tiene que persistir el token renovado; que además redirija es cortesía. Borrar `proxy.ts` entero **no da acceso a ningún dato administrativo** — verificado empíricamente, no deducido (ver DEC-031 §Consequences).
+
+Corolario que los propios docs de Next 16 subrayan: una Server Function es un POST a la ruta donde se usa, así que **un cambio de `matcher` o mover una action de archivo puede sacarla de la cobertura del proxy sin que nada falle a la vista**. Por eso la capa 3 (`requireAdmin()` en `lib/admin/auth.ts`) es obligatoria en toda mutación, sin excepción.
+
+**El layout NO frena a la página** (hallazgo real de Fase 7): en RSC layout y página se renderizan **en paralelo**. Que el layout devuelva "Acceso denegado" sin pintar sus `children` no impide que la página hermana se haya renderizado, y su payload viaja en el HTML. Se comprobó sirviendo el build. No filtraba ningún dato —RLS devolvía 0 filas— pero por eso **cada función de `lib/data/admin/` lleva su propio `requireAdmin()`** y devuelve vacío si falla (DEC-034). Una pantalla de admin nueva debe llevar ese guard en su función de datos; no basta con estar bajo el layout.
+
+`getAdminAccess()` (`lib/admin/auth.ts`) es la única puerta a la identidad: `getUser()` + la función SQL `public.is_admin()`, envuelto en `cache()` para no repetir red dentro de la misma request. **El criterio de rol no se reimplementa en TypeScript**; si `is_admin()` cambia, el código lo hereda. Ante un error de esa comprobación se deniega, nunca se degrada a permitir.
 
 ---
 
@@ -163,23 +193,40 @@ El rol solo se eleva por SQL/dashboard (service role), nunca por una action acce
 
 | Zona | Mecanismo |
 |---|---|
-| `/admin/**` | proxy.ts (cookie presente?) + layout (getUser + rol) |
-| `/admin/login` | Excluido del guard; si ya hay sesión válida → redirect a `/admin` |
+| `/admin/**` | proxy.ts (refresh de sesión + redirect si no hay sesión) + `(panel)/layout.tsx` (getUser + `is_admin()`) |
+| `/admin/login` | Fuera del route group protegido (`(auth)`), nunca redirigido por el proxy. Si hay sesión **de admin** → redirect a `/admin`; si hay sesión sin rol, se muestra el motivo en vez de redirigir (evita el bucle login → /admin → login) |
+| Sesión válida sin rol admin | El layout renderiza "Acceso denegado" + logout. **No** se redirige |
+| `?next=` del login | `safeAdminRedirect()`: solo rutas internas de `/admin`. Rechaza absolutas, `//host` y backslashes (open redirect) |
 | API pública futura (webhooks pago) | Validación de firma del proveedor; nunca trust del body |
-| Server Actions | Verificación interna propia (no dependen del layout) |
+| Server Actions | `requireAdmin()` propio en cada una (no dependen del layout ni del proxy) |
 
-`proxy.ts` (Fase 7) — esqueleto conceptual:
+Estructura de rutas (los route groups no cambian ninguna URL):
+
+```
+app/admin/(auth)/login/page.tsx     → /admin/login   PÚBLICA (sin guard)
+app/admin/(panel)/layout.tsx        → guard real: getUser() + is_admin()
+app/admin/(panel)/page.tsx          → /admin         PROTEGIDA
+```
+
+`05-ADMIN.md` §2 situaba el guard en `app/admin/layout.tsx`; ahí envolvería también al login y se redirigiría a sí mismo en bucle. Los route groups resuelven eso sin cambiar URLs (DEC-031).
+
+`proxy.ts` real (Fase 7) — lo esencial:
 
 ```ts
-// proxy.ts — Next.js 16 (reemplaza middleware; runtime Node.js)
-export function proxy(request: Request) {
-  const hasSession = /* cookie sb-* presente */;
-  if (!hasSession && request.url.includes('/admin')) {
-    return Response.redirect(new URL('/admin/login', request.url));
-  }
+// proxy.ts — Next.js 16 (reemplaza middleware; runtime Node.js por defecto)
+export async function proxy(request: NextRequest) {
+  const { user, response } = await refreshSession(request); // getUser() + cookies renovadas
+  if (user || request.nextUrl.pathname === "/admin/login") return response;
+  return withSessionCookies(response, NextResponse.redirect(loginUrl)); // no perder el refresh
 }
-export const config = { matcher: '/admin/:path*' };
+export const config = { matcher: "/admin/:path*" };
 ```
+
+Detalles que no son opcionales:
+- `refreshSession` usa `getUser()`, **nunca `getSession()`**: el segundo solo decodifica la cookie.
+- Las cookies renovadas deben copiarse también al redirect, o se pierde el refresh justo cuando más falta hace.
+- El proxy **no** llama a `is_admin()`.
+- El `matcher` deja fuera toda la tienda pública (verificado: ni una `Set-Cookie` en `/`, `/carrito`, `/checkout`, `/producto/*`, `/pedido/*`).
 
 ---
 
@@ -220,5 +267,7 @@ Checklist anti-fuga (verificado en Fase 4.5, 2026-09-01):
 
 - Broken Access Control → RLS + verificación en actions ✅
 - Injection → queries parametrizadas (cliente Supabase) ✅
-- Security Misconfiguration → headers sugeridos en next.config (X-Frame-Options DENY, Referrer-Policy strict-origin-when-cross-origin, Permissions-Policy mínima) — aplicar en Fase 10
+- Security Misconfiguration → **HECHO en Fase 9** (DEC-042): `next.config.ts` sirve `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin` y una `Permissions-Policy` mínima en todas las rutas (verificado por HTTP en home, ficha y login). ⬜ `Content-Security-Policy` y `Strict-Transport-Security` quedan para el **deploy (Fase 11)**: la CSP exige calibrarse en un navegador real —Next inyecta scripts inline y Tailwind estilos inline— y HSTS necesita el dominio HTTPS definitivo
+- `robots.txt` (Fase 9) deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido`. **No es un control de acceso**: es una petición a los crawlers que se portan bien. Lo que impide entrar al panel sigue siendo `proxy.ts` → layout con `is_admin()` → `requireAdmin()` → RLS. Verificado en la misma ejecución: con `robots.txt` publicado, un anónimo sigue recibiendo un redirect al login en `/admin` y `/admin/pedidos`
+- El `sitemap.xml` solo lista contenido público (home y fichas publicadas). Un borrador o un producto eliminado no puede aparecer: se filtra en la query Y lo tapa RLS (comprobado con la clave anónima)
 - Identification/Auth failures → rate limiting de login (Supabase lo incluye; revisar umbrales)

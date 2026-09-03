@@ -18,6 +18,13 @@ export const getCategories = cache(
       .select("slug, name, image_url")
       .eq("market_id", market.id)
       .is("parent_id", null)
+      // `is_active` y `deleted_at` ya los filtra la policy
+      // `public_read_active_categories` (migración 0005), pero se repiten aquí
+      // a propósito: es la misma defensa en profundidad que aplica
+      // `lib/data/products.ts`, y deja el filtro visible en el código en vez de
+      // depender de que nadie relaje la policy algún día.
+      .eq("is_active", true)
+      .is("deleted_at", null)
       .order("sort_order", { ascending: true });
 
     if (error) {

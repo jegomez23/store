@@ -15,15 +15,16 @@
     "db:types:local": "supabase gen types typescript --local --schema public > types/database.types.ts",
     "db:push": "supabase db push",
     "db:push:seed": "supabase db push --include-seed",
-    "test": "node --test --experimental-strip-types --no-warnings \"lib/**/__tests__/*.test.ts\"",
-    "test:watch": "node --test --watch --experimental-strip-types --no-warnings \"lib/**/__tests__/*.test.ts\""
+    "test": "node --test --test-concurrency=1 --experimental-strip-types --no-warnings \"lib/**/__tests__/*.test.ts\"",
+    "test:watch": "node --test --watch --test-concurrency=1 --experimental-strip-types --no-warnings \"lib/**/__tests__/*.test.ts\""
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "next": "16.3.3",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

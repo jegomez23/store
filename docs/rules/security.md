@@ -5,7 +5,7 @@
 ## Autorización
 
 1. La autoridad final es RLS. Ninguna medida de frontend sustituye políticas de BD.
-2. Verificación en capas para /admin: proxy.ts (optimista) + layout (getUser + rol) + cada Server Action (re-verifica). Las tres, siempre.
+2. Verificación en capas para /admin, las tres siempre (DEC-031): **proxy.ts mantiene la sesión viva** (refresh + cookies) y redirige por cortesía — *no comprueba el rol y no debe hacerlo*; **el layout comprueba quién eres** (`getUser()` + `is_admin()`); **cada Server Action comprueba qué puedes hacer** (`requireAdmin()` de `lib/admin/auth.ts`). Nunca omitas la tercera "porque el layout ya protege": una Server Function es un POST a su ruta y un cambio de `matcher` puede sacarla del proxy sin que nada falle a la vista.
 3. `getUser()` (valida contra servidor Supabase) para decisiones de seguridad; `getSession()` solo para UX no sensible.
 4. Nuevos roles o permisos = decisión registrada antes de implementar.
 
@@ -28,9 +28,10 @@
 
 ## Rutas y cabeceras
 
-13. robots.ts deniega `/admin` y `/api`; sitemap nunca incluye rutas privadas.
-14. Headers de seguridad (X-Frame-Options, Referrer-Policy, Permissions-Policy) se configuran en next.config — tarea de Fase 10, no antes sin necesidad.
+13. `app/robots.ts` (Fase 9) deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido`; el sitemap nunca incluye rutas privadas ni contenido no publicado. **`robots.txt` no es seguridad**: no sustituye a `proxy.ts`, `requireAdmin()` ni RLS, y nadie debe "arreglar" un fallo de acceso tocándolo.
+14. Headers de seguridad en `next.config.ts`: **HECHOS en Fase 9** (DEC-042) los cuatro de `08-SECURITY.md` §9. `Content-Security-Policy` y `Strict-Transport-Security` van en el deploy (Fase 11), no antes: la CSP hay que calibrarla en un navegador real y HSTS necesita el dominio HTTPS.
+15. El `blur_data_url` de una imagen lo genera SIEMPRE el servidor con `sharp`; jamás se acepta uno enviado por el navegador. Lo impone además un CHECK en PostgreSQL (migración 0022).
 
 ## Revisión
 
-15. Toda PR/tarea que toque auth, RLS, storage o actions debe incluir auto-revisión explícita de seguridad en el reporte final.
+16. Toda PR/tarea que toque auth, RLS, storage o actions debe incluir auto-revisión explícita de seguridad en el reporte final.

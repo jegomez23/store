@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +12,27 @@ import { getFeaturedProducts } from "@/lib/data/products";
 import { getActiveMarket } from "@/lib/markets";
 
 export const revalidate = 300;
+
+/**
+ * Metadata de la home (Fase 9). Canonical explícita para que los enlaces con
+ * `?utm_...` o con hash no generen duplicados a ojos de Google
+ * (`docs/09-SEO-PERFORMANCE.md` §1, "Sin páginas duplicadas").
+ */
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "YI",
+    title: "YI",
+    description: "Vive a tu propio ritmo.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "YI",
+    description: "Vive a tu propio ritmo.",
+  },
+};
 
 // TODO(i18n): strings visibles sin centralizar — lib/i18n/ no existe
 // todavía (DEC-013 resuelta, español único; módulo pendiente de crear).

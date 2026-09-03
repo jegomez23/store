@@ -4,6 +4,95 @@
 
 ---
 
+## 2026-09-02 — FASE 9: SEO, imágenes y una estrategia de caché por fin medida
+
+**What changed:**
+- **`app/robots.ts`**: deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido`; anuncia el sitemap.
+- **`app/sitemap.ts`**: home + fichas de producto publicadas. Sin categorías ni infos, porque esas rutas **no existen** en `app/` (DEC-039).
+- **Metadata**: canonical, Open Graph con la foto real del catálogo, Twitter card y `meta_title`/`meta_description` con fallback, en ficha y home. Sin inventar campos SEO en PostgreSQL.
+- **JSON-LD** `Product` + `BreadcrumbList` en la ficha, desde Server Component (cero JS al cliente), con `availability` derivada del stock real.
+- **`app/opengraph-image.tsx`** para la home, con `next/og` (viene dentro de Next 16).
+- **Migración `0022`**: `product_images.blur_data_url`, NULLABLE y con CHECK. El placeholder lo genera `sharp` en la subida: WebP de 16 px, 66 bytes medidos (DEC-040).
+- **`lib/seo/`**: `urls.ts` y `json-ld.ts`, módulos puros con tests.
+- **Matriz de invalidación** documentada y aplicada (DEC-041).
+- **Headers de seguridad** en `next.config.ts` (DEC-042, decidido por Juan).
+- `RemoteImage` acepta `blurDataURL` y `sizes`; la ficha pasa `sizes` reales y `priority` solo a la foto principal.
+
+**Why:**
+Fase 8 dejó la tienda llena de contenido real pero **invisible**: sin `robots.txt`, sin sitemap, sin datos estructurados y con las fichas sin canonical. Y dejó una deuda de caché que no supo declarar ni correcta ni incorrecta.
+
+**Impact:**
+- **Nuevas decisiones:** DEC-039 (el sitemap solo describe rutas que existen), DEC-040 (blur en la BD, generado en servidor, 16 px), DEC-041 (matriz de invalidación), DEC-042 (headers sin CSP/HSTS).
+- **La deuda de caché de Fase 8 era falsa.** Se reprodujo el escenario **sobre el build de Fase 8, antes de tocar una línea**: crear una categoría, forzar la regeneración con una acción real, borrarla por la Server Action y medir `x-nextjs-cache`. Tres ejecuciones idénticas: `/` y `/producto/<slug>` dan `MISS` y ya no la muestran. `revalidatePath('/', 'layout')` sí invalida las fichas ya generadas. La medida inconsistente de Fase 8 venía de comprobar `settings.store_name`, que no se pinta en ninguna página pública.
+- **Cuatro problemas reales encontrados y corregidos:**
+  1. **El panel de pedidos seguía invalidando por patrón**, la forma que DEC-037 había declarado inservible. Cancelar un pedido devolvía el stock a la BD y **la ficha seguía mostrando el anterior** hasta 5 minutos. Ahora se resuelven los slugs reales de las líneas y se invalida cada ficha por ruta literal; un test estático impide reintroducir el patrón en todo el repositorio.
+  2. **El sitemap no se invalidaba con nada**: es un Route Handler cacheado, así que un producto retirado seguía anunciado a Google aunque su ficha ya diera 404.
+  3. **Un comentario del código mentía**: `updateWhatsAppNumberAction` decía que "el número se lee en el checkout". Medido: no aparece en ningún HTML — lo lee `getCheckoutChannel()` dentro de la Server Action, que no se cachea.
+  4. **`getCategories()` no filtraba `is_active` ni `deleted_at`.** No era una fuga (la policy ya lo tapaba), pero dejaba la defensa entera en RLS.
+- **Verificación:** 438 tests (`npm test`), 12 de integración nuevos contra Supabase real, **75 comprobaciones end-to-end** sobre el build servido y **16 más del pipeline de blur con una subida de imagen real** por la Server Action, sin navegador y sin JavaScript. Todas las URLs del sitemap comprobadas una a una. `lint`, `tsc` y `build` verdes. 0 ocurrencias de la service role key, de `sharp` y de los clientes de servidor en los 796 archivos del build. Base de datos y buckets devueltos a su baseline exacto.
+- **Sin dependencias nuevas.**
+- **NO verificado, y no se declara cumplido:** los **Core Web Vitals**. En este entorno no hay navegador automatizado, así que LCP, INP y CLS siguen sin medirse, igual que cualquier clic real. Tampoco está verificado el POST de alta/edición de categorías: sus formularios se montan tras un clic y no están en el HTML.
+- **Sigue pendiente:** backfill del blur de las 4 imágenes anteriores, redirect 301 al cambiar slug, CSP y HSTS, `/categoria/[slug]`, promociones, imágenes de home/logo, reset de contraseña, `lib/i18n/`, drag&drop.
+
+---
+
+## 2026-09-02 — FASE 8: CMS de catálogo (productos, variantes, categorías, imágenes, home, ajustes)
+
+**What changed:**
+- **CRUD de productos**: crear, editar (General + SEO), publicar/retirar/archivar, borrado lógico, búsqueda y filtro por estado.
+- **Matriz de variantes color × talla** con creación en lote **atómica e idempotente** (migración `0021`, `admin_create_variant_matrix`, `SECURITY INVOKER`).
+- **Categorías**: jerarquía de 2 niveles (impuesta por el trigger existente), orden, activar/desactivar, borrado lógico bloqueado por la FK real.
+- **Imágenes en Supabase Storage**: subida con conversión a WebP en servidor (`sharp`), validación por magic bytes, orden, imagen principal, eliminación con limpieza del objeto y compensación de huérfanos.
+- **Editor de home** sobre los tres tipos de bloque que existen en `home_content`.
+- **Ajustes**: nombre de tienda, email, redes y número de WhatsApp.
+- **Migración `0020`** (correctiva, aplicada ANTES del CMS): aislamiento de mercado en las escrituras de admin, DEC-022 en `home_content`/`promotions`/`shipping_methods`, endurecimiento de los buckets y unicidad real de la imagen principal.
+- Renumeración del roadmap: CMS = Fase 8, SEO = 9, Testing = 10, Deploy = 11 (DEC-038).
+- **Una dependencia nueva, justificada y aprobada**: `sharp` (ya venía como transitiva de Next 16).
+
+**Why:**
+Fase 7 dejó la tienda operable pero **publicar un producto nuevo seguía requiriendo SQL**. Sin CMS no se puede cargar catálogo real, y sin catálogo real el SEO de la fase siguiente habría trabajado sobre datos de prueba.
+
+**Impact:**
+- **Nuevas decisiones:** DEC-035 (el admin solo escribe en mercados activos), DEC-036 (un objeto por imagen, WebP en servidor), DEC-037 (invalidación por ruta literal), DEC-038 (renumeración).
+- **Tres problemas reales encontrados y corregidos, no documentados como aceptables:**
+  1. **Un admin podía escribir en Colombia** manipulando `market_id`: las policies de admin no miraban el mercado y `profiles` no sabe a qué mercado pertenece un admin. Cerrado en RLS con `is_active_market` (DEC-035), verificado incluyendo el intento de mover un producto de ES a CO.
+  2. **DEC-022 estaba incumplida** en `home_content`, `promotions` y `shipping_methods`: la migración `0016` se las dejó. El contenido de home de un mercado inactivo habría sido público.
+  3. **La invalidación por patrón no invalidaba nada**: tras despublicar, la ficha seguía en `HIT` y el producto seguía comprándose. Corregido con ruta literal (DEC-037); verificado: 404 inmediato.
+- **Espacio en Supabase (pregunta explícita de Juan):** medido con un JPEG de 4032×3024 → WebP de 2000 px: **×13,2 menos**. Pasa de ~50 a ~570 productos de 5 fotos por GB.
+- **Verificación:** 391 tests (`npm test`), 53 de integración nuevos contra Supabase real, 78 comprobaciones end-to-end sobre el build servido (incluidas subidas reales de imagen y Server Actions invocadas sin UI ni JavaScript, con control positivo), 12 de la migración correctiva. `lint`, `tsc` y `build` verdes. 0 ocurrencias de la service role key y 0 de `sharp` en el bundle cliente. Base y bucket devueltos a su baseline.
+- **Sigue pendiente:** promociones, imágenes de home/logo (bucket `content`), reset de contraseña, `lib/i18n/`, invalidación por tags, drag&drop de orden.
+- **No verificado:** nada visto en un navegador real; y la invalidación del chrome de la tienda dio medidas inconsistentes — declarada NO verificada.
+
+---
+
+
+## 2026-09-02 — FASE 7: Panel de administración (núcleo operativo)
+
+**What changed:**
+- **Autenticación real de admin.** `/admin/login` con Supabase Auth (email+contraseña), logout, y `proxy.ts` (matcher `/admin/:path*`). Guard real en `app/admin/(panel)/layout.tsx` con `getUser()` + `is_admin()`; `lib/admin/auth.ts` como DAL cacheado por request. Route groups `(auth)`/`(panel)` para que el login no quede bajo su propio guard.
+- **Migración 0019 — `admin_update_order_status`**, `SECURITY INVOKER`: bloquea el pedido, valida la transición, escribe estado + `order_event` y, al cancelar, **devuelve el stock**, todo en una transacción.
+- **Pedidos:** `/admin/pedidos` (filtro por estado, búsqueda por número, paginación 20/pág.) y `/admin/pedidos/[numero]` (snapshots, totales, cliente, historial, cambio de estado).
+- **Catálogo y ajustes mínimos:** publicar/retirar producto, editar stock/precio/activa por variante, y cambiar el número de WhatsApp sin desplegar.
+- **Dashboard:** pedidos por estado, últimos pedidos, stock bajo.
+- `npm test` pasa a `--test-concurrency=1`: las suites de integración comparten la misma instancia real de Supabase y en paralelo se pisaban.
+- **Sin dependencias nuevas.** `lib/supabase/admin.ts` (service role) sigue sin existir: el panel no lo necesita.
+
+**Why:**
+Fase 6 dejó los pedidos creándose pero **solo consultables con la service role key o desde el dashboard de Supabase**. Sin panel, la tienda podía vender pero no operarse. Alcance acordado con Juan: cerrar de verdad el ciclo de un pedido antes que abarcar todos los módulos de `05-ADMIN.md`.
+
+**Impact:**
+- **Nuevas decisiones:** DEC-031 (proxy mantiene la sesión viva, no autoriza), DEC-032 (máquina de estados en PostgreSQL con `SECURITY INVOKER`), DEC-033 (cancelar devuelve stock exactamente una vez), DEC-034 (data layer admin con sesión, sin service role, con guard por función).
+- **Dos debilidades reales encontradas y corregidas, no documentadas como "aceptables":**
+  1. La cookie de sesión **no era `httpOnly`** — es el default de `@supabase/ssr`, en contra de lo que afirmaba `08-SECURITY.md` §2. Se fuerza en `lib/supabase/cookies.ts`, junto con `Secure` derivado del protocolo real.
+  2. **El guard del layout no impedía que la página hermana se renderizase** (en RSC van en paralelo), así que su payload viajaba en el HTML de un usuario sin rol. No filtraba datos porque RLS devolvía 0 filas, pero era una barrera única: ahora cada función de `lib/data/admin/` lleva su propio `requireAdmin()`.
+- **Un bug de comportamiento corregido:** un `loading.tsx` en `(panel)/` hacía que `/admin/pedidos/<inexistente>` respondiera **200** en vez de 404 (el shell se envía antes de resolver `notFound()`). Sustituido por `<Suspense>` + `AdminSkeleton` por página.
+- **Verificación:** 295 tests (`npm test`), 78 comprobaciones end-to-end del panel sobre el build servido, 39 de auditoría RLS con controles positivos, 38 de sesión y refresh de token. Incluye invocar una Server Action **directamente, sin UI y sin JavaScript**, con control positivo. `lint`, `tsc` y `build` verdes. 0 ocurrencias de la service role key en los 466 archivos del build. Base de datos devuelta al baseline del seed.
+- **Sigue pendiente** (no implementado, no "hecho a medias"): CRUD de productos, imágenes/Storage, categorías, promociones, editor de home, reset de contraseña, `lib/i18n/` y la invalidación por tags (hoy se usa `revalidatePath`).
+- **No verificado:** no hay navegador automatizado en este entorno, así que ningún clic real se ha comprobado.
+
+---
+
+
 ## 2026-08-26 — FASE 0: Sistema de contexto y documentación base
 
 **What changed:**

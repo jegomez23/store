@@ -1,6 +1,24 @@
 # 09 — SEO-PERFORMANCE: Visibilidad y velocidad
 
-> Estrategia SEO técnica y presupuesto de rendimiento. Se implementa de forma incremental (Fases 4–8); los cimientos se definen desde Fase 1.
+> Estrategia SEO técnica y presupuesto de rendimiento. Se implementa de forma incremental; los cimientos se definen desde Fase 1.
+>
+> **Estado real (tras la Fase 9, 2026-09-02).** Lo marcado ⬜ NO está hecho.
+>
+> | Punto | Estado |
+> |---|---|
+> | §1 URLs | 🟡 Existen `/` y `/producto/[slug]`. **`/categoria/[slug]` e `/info/[slug]` NO existen** (DEC-039) |
+> | §1 Metadata global | ✅ `metadataBase`, template `%s · YI`, description |
+> | §1 Metadata por página | ✅ Producto: `meta_title`/`meta_description` con fallback, canonical, OG con foto real, Twitter. Home: canonical + OG |
+> | §1 Open Graph | ✅ OG por producto con imagen del catálogo · ✅ `app/opengraph-image.tsx` para la home (`next/og`, sin dependencias nuevas) · ⬜ OG dinámica por producto: **diferida a propósito**, como dice esta misma sección |
+> | §1 Sitemap | ✅ `app/sitemap.ts`: home + fichas publicadas. Sin categorías ni infos porque esas rutas no existen (DEC-039). Invalidado en cada mutación de producto (DEC-041) |
+> | §1 Robots | ✅ `app/robots.ts`: deniega `/admin`, `/api`, `/carrito`, `/checkout`, `/pedido`. **No es control de acceso** |
+> | §1 JSON-LD | ✅ `Product` + `BreadcrumbList` en la ficha, desde Server Component. El breadcrumb es Inicio → producto: no hay página de categoría a la que enlazar |
+> | §1 Redirect 301 al cambiar slug | ⬜ NO implementado. Hoy el slug antiguo pasa a dar 404 (sí se invalida, DEC-041) |
+> | §1 404 personalizada | ✅ desde Fase 4 |
+> | §2 Imágenes | ✅ `next/image` con `sizes` por contexto · ✅ `priority` solo en la foto principal de la ficha · ✅ placeholder blur generado en servidor (DEC-040) · ✅ `remotePatterns` |
+> | §2 Caché | ✅ ISR 5 min + matriz de invalidación (DEC-041) |
+> | §2 Medición Lighthouse / CWV | ⬜ **NO hecho: no hay navegador en este entorno.** Los presupuestos de LCP/INP/CLS no están medidos |
+> | Headers de seguridad | ✅ los cuatro de `08-SECURITY.md` §9 (DEC-042). ⬜ CSP y HSTS en el deploy |
 
 ---
 
@@ -29,7 +47,7 @@ Sin prefijos de idioma/mercado: cada deploy ES su mercado con su dominio (`07-MU
 - Archivos estáticos `opengraph-image` para home (Fase 8). Generación dinámica por producto: diferida hasta justificarla.
 
 ### Sitemap y robots
-- `app/sitemap.ts`: productos activos + categorías activas + infos + home. Regenerado con revalidación del tag `catalog`.
+- `app/sitemap.ts`: home + productos activos. **Categorías e infos NO** — esas rutas no existen en `app/` y listarlas sería anunciar 404 (DEC-039). No se regenera por tag (no hay tags): se invalida con `revalidatePath('/sitemap.xml')` en cada mutación de producto (DEC-041).
 - `app/robots.ts`: permite todo público; **deniega `/admin`, `/api`**.
 - JSON-LD: `Product` (name, image, offers con precio/moneda/disponibilidad) y `BreadcrumbList` en ficha — inyectado en Server Component.
 
@@ -54,7 +72,7 @@ Sin prefijos de idioma/mercado: cada deploy ES su mercado con su dominio (`07-MU
 - SIEMPRE `next/image` con `sizes` correctos por contexto.
 - Formato: Supabase Storage sirve original; el optimizador de Next entrega WebP/AVIF.
 - `priority` SOLO en imagen principal above-the-fold (hero, primera foto de ficha).
-- Placeholder blur generado en subida (admin guarda `blurDataURL`) o color dominante.
+- Placeholder blur generado en subida (admin guarda `blurDataURL`) o color dominante. **HECHO (DEC-040):** `sharp` genera un WebP de 16 px (~66 bytes) durante la subida y se guarda en `product_images.blur_data_url` (migración `0022`, con CHECK). Nunca se acepta del cliente. Las 4 imágenes anteriores a Fase 9 tienen `NULL` y se pintan sin placeholder: el backfill está PENDIENTE.
 - Config obligatoria en `next.config.ts` (Fase 1):
 ```ts
 images: {
@@ -80,7 +98,7 @@ images: {
 ### Medición
 - Lighthouse CI local en cada fase de UI (umbral ≥ 90 móvil).
 - Vercel Analytics opcional en Fase 10 (decisión de Juan).
-- Auditoría CWV formal: Fase 8.
+- Auditoría CWV formal: ⬜ **PENDIENTE**. En este entorno no hay navegador automatizado, así que ni Lighthouse ni las métricas de campo se han medido. No se declara ningún presupuesto como cumplido.
 
 ---
 

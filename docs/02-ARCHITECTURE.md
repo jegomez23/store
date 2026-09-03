@@ -38,6 +38,9 @@ store_ropa/
 │   ├── layout.tsx                 # Layout raíz: fuentes, metadata base
 │   ├── globals.css                # Tailwind 4 + tokens @theme del design system
 │   ├── page.tsx                   # → se convertirá en redirect a /(store)
+│   ├── robots.ts                  # robots.txt (Fase 9) — NO es control de acceso
+│   ├── sitemap.ts                 # sitemap.xml (Fase 9): home + fichas publicadas
+│   ├── opengraph-image.tsx        # OG de la home, generada con next/og (Fase 9)
 │   ├── (store)/                   # ROUTE GROUP público (comparte layout de tienda)
 │   │   ├── layout.tsx             # Header + bottom nav móvil + footer
 │   │   ├── page.tsx               # Home
@@ -60,6 +63,7 @@ store_ropa/
 │   ├── store/                     # Compuestos de tienda (ProductCard, VariantPicker…)
 │   └── admin/                     # Compuestos del panel
 ├── lib/
+│   ├── seo/                       # urls.ts + json-ld.ts (puros, Fase 9)
 │   ├── supabase/                  # clients: server.ts (cookies, sesión), browser.ts,
 │   │                              # static.ts (sin cookies, lecturas públicas — Fase 4),
 │   │                              # admin.ts (service role, pendiente)
@@ -94,15 +98,31 @@ components/ui no importa nada de negocio (componentes puros)
 | `/` Home | Estática con `revalidate = 300` | Contenido editable; refresco ≤5 min aceptable |
 | `/categoria/[slug]` | `generateStaticParams` + `revalidate = 300` | Catálogo pequeño; ISR |
 | `/producto/[slug]` | `generateStaticParams` + `revalidate = 300` | SEO crítico; stock fresco suficiente |
+| `/robots.txt`, `/sitemap.xml` | Route Handlers cacheados por Next | El sitemap se invalida en cada mutación de producto (DEC-041) |
+| `/opengraph-image` | Estática, generada en build con `next/og` | Sin dependencias nuevas: `next/og` viene en Next 16 |
 | `/checkout` | Shell estático + cuerpo client | Depende del carrito (localStorage). La mutación va por Server Action (Fase 6) |
 | `/pedido/[numero]` | Dinámica | Solo valida el formato del número; **no consulta la BD** (DEC-027: los números son adivinables) |
 | `/carrito` | Shell estático + cuerpo client | El estado vive en localStorage: el servidor no puede conocerlo. La página se prerenderiza vacía (título y layout) y `CartContents` la rellena tras hidratar (Fase 5) |
 | `/admin/**` | Dinámica siempre (`export const dynamic = 'force-dynamic'`) | Datos en tiempo real |
 
-Invalidación desde el admin (Server Actions):
-- Cambios de productos/categorías → `revalidateTag('catalog', 'max')`.
-- Cambios que deben verse al instante en la pantalla actual → `updateTag(...)`.
-- Tags previstos: `catalog`, `home`, `settings`, `orders`.
+Invalidación desde el admin — **matriz completa en la cabecera de `lib/admin/revalidate.ts`** (DEC-041):
+
+| Mutación | Se invalida |
+|---|---|
+| Producto: editar / publicar / retirar / archivar / borrar | `/producto/<slug>` + `/` + `/sitemap.xml` (si cambia el slug, también la ficha ANTIGUA) |
+| Variante: precio / stock / activa | igual que arriba |
+| Imagen: añadir / borrar / principal / orden | igual que arriba |
+| Categoría: crear / editar / borrar / activar / parent | `revalidatePath('/', 'layout')` + sitemap |
+| Ajustes: nombre / email / redes | `revalidatePath('/', 'layout')` + sitemap |
+| Ajustes: número de WhatsApp | `/checkout` — aunque el número **no viaja en ningún HTML**: lo lee `getCheckoutChannel()` dentro de la Server Action, que no se cachea |
+| Home: bloque editar / activar / orden | `/` |
+| Pedido cancelado (devuelve stock) | los slugs REALES de sus líneas, uno a uno, + `/` |
+
+- **Ruta LITERAL, nunca patrón** (DEC-037). Medido: `revalidatePath('/producto/[slug]', 'page')` **no** invalida lo que `generateStaticParams` prerenderizó, así que un producto retirado seguía comprándose. Un test estático impide reintroducirlo.
+- **`revalidatePath('/', 'layout')` para lo global.** Medido tres veces sobre el build servido: tras borrar una categoría, `/` y `/producto/<slug>` responden `MISS` y ya no la muestran. Esto **cierra** la deuda que Fase 8 dejó abierta como "un cambio de categorías no invalida las fichas ya generadas": sí las invalida.
+- **El sitemap es un Route Handler cacheado** y se invalida con cada mutación de producto; sin eso, un producto retirado seguiría anunciado a Google con su ficha ya en 404.
+- Tags previstos (`catalog`, `home`, `settings`, `orders`): **siguen sin implementar** y no hacen falta hoy — el data layer usa el cliente de Supabase, no `fetch` etiquetado, y las rutas afectadas se conocen exactamente en cada mutación.
+- El panel no necesita invalidarse: es `force-dynamic`.
 
 > Nota Next.js 16: `revalidateTag(tag, perfil)` exige segundo argumento; `updateTag()` da semántica read-your-writes dentro de Server Actions.
 
@@ -119,11 +139,21 @@ Server Component → lib/data/products.getFeatured(market) → supabase (anon) �
 
 ### Escritura (admin)
 ```
-Admin UI (client) → Server Action ('use server') → valida sesión+rol → valida input
-   → supabase (service role o client autenticado) → revalidateTag/updateTag → refresh()
+Admin UI (client) → Server Action ('use server') → requireAdmin() → valida input
+   → supabase (cliente AUTENTICADO, nunca service role) → revalidatePath()
 ```
 - Mutaciones SOLO vía Server Actions (no route handlers para CRUD interno).
-- Validación de entrada manual con TypeScript (sin zod hasta justificarlo).
+- Validación de entrada manual con TypeScript (sin zod hasta justificarlo, DEC-029).
+- **Sin service role** (DEC-034): el admin autenticado ya tiene sus policies, así que RLS sigue filtrando. `lib/supabase/admin.ts` sigue sin existir.
+- Las mutaciones actualizan **columnas concretas**, nunca un objeto que venga del cliente: `market_id`, ids, `sku`, `color_id` y `size_id` no son editables desde el panel.
+- Lo que debe ser atómico (estado de pedido + evento + stock) vive en una función SQL, no en TypeScript (DEC-032).
+
+### Lectura (admin)
+```
+Server Component → lib/data/admin/* → requireAdmin() → supabase (sesión) → RLS filtra → UI
+```
+- `requireAdmin()` **en cada función**, no solo en el layout: en RSC el layout no impide que la página hermana se renderice (DEC-034).
+- Toda consulta filtra por `market_id`: las policies de admin no lo hacen (un admin lo ve todo), así que es responsabilidad del código.
 
 ### Cliente interactivo
 - Carrito: React Context + reducer + `localStorage` (DEC-005). Lógica pura testeable en `lib/cart/`.
@@ -133,13 +163,16 @@ Admin UI (client) → Server Action ('use server') → valida sesión+rol → va
 
 ## 5. Autenticación y sesiones (resumen; detalle en 08-SECURITY)
 
-- `@supabase/ssr` con cookies httpOnly; clientes separados:
-  - `lib/supabase/server.ts` — componentes/actions con sesión (cookies async). **Sin uso todavía** (Fase 4 no tiene Server Actions ni auth; se activa en Fases 6-7).
-  - `lib/supabase/browser.ts` — interacciones client-side.
+- `@supabase/ssr` con cookies de sesión. **`httpOnly` lo fuerza este proyecto**, no la librería: sus `DEFAULT_COOKIE_OPTIONS` traen `httpOnly: false` y no marcan `Secure`. `lib/supabase/cookies.ts` (Fase 7) los añade y lo aplican `server.ts` y `proxy.ts` — ver DEC-031 y `08-SECURITY.md` §2. Clientes separados:
+  - `lib/supabase/server.ts` — componentes/actions con sesión (cookies async). **En uso desde Fase 7** (panel admin).
+  - `lib/supabase/proxy.ts` *(Fase 7)* — cliente sobre `NextRequest` para renovar la sesión dentro de `proxy.ts`; es el único sitio del request donde las cookies renovadas pueden persistirse.
+  - `lib/supabase/browser.ts` — interacciones client-side. **Sigue sin consumidor**: el panel es 100% server-side, y eso es lo que permite el `httpOnly`.
   - `lib/supabase/static.ts` *(Fase 4, no estaba en el plan original)* — `@supabase/supabase-js` plano, sin cookies. Usado por `lib/markets.ts` y `lib/data/*` para lecturas públicas anónimas. Necesario porque `generateStaticParams` corre en build-time sin request/cookies — `server.ts` lanza error ahí (`cookies()` fuera de contexto de request). RLS sigue siendo la autoridad; estas queries nunca necesitan `auth.uid()`.
-  - `lib/supabase/admin.ts` — service role, SOLO importable desde servidor. Sigue sin existir.
-- `proxy.ts`: redirige a `/admin/login` si no hay cookie de sesión en `/admin/**` (optimista).
-- `app/admin/layout.tsx`: verificación REAL con `getUser()` (valida token contra Supabase) + rol admin.
+  - `lib/supabase/admin.ts` — service role, SOLO importable desde servidor. **Sigue sin existir** tras la Fase 8: tampoco el CMS lo necesita (DEC-034).
+  - `lib/storage/product-images.ts` *(Fase 8)* — subida y borrado en Storage con `sharp`. **Solo servidor**: módulo nativo, nunca en un bundle cliente (verificado: 0 ocurrencias en `.next/static`).
+- `proxy.ts` (matcher `/admin/:path*`): **mantiene la sesión viva** (refresca el token y escribe las cookies) y, de paso, redirige a `/admin/login` si no hay sesión. **No comprueba el rol** (DEC-031).
+- `app/admin/(panel)/layout.tsx`: verificación REAL con `getUser()` (valida el token contra Supabase) + `is_admin()`. El route group `(auth)` deja `/admin/login` fuera del guard sin cambiar la URL.
+- `lib/admin/auth.ts` — `getAdminAccess()` (DAL cacheado por request) y `requireAdmin()`, obligatorio en toda Server Action administrativa.
 
 ---
 
@@ -176,4 +209,4 @@ Admin UI (client) → Server Action ('use server') → valida sesión+rol → va
 | Next.js 16 muy reciente: docs de internet desactualizadas | Consultar SIEMPRE `node_modules/next/dist/docs/` |
 | Turbopack cambia comportamiento de builds | Mantener config mínima; validar build en CI temprano (Fase 10) |
 | Stock desincronizado entre carrito local y BD | Re-validación server-side al registrar pedido; snapshot de precio |
-| Imágenes pesadas de catálogo | next/image + tamaños responsive + prioridad solo above-the-fold (09) |
+| Imágenes pesadas de catálogo | next/image + `sizes` por contexto + `priority` SOLO en la foto principal de la ficha + placeholder blur generado en servidor (DEC-040) |
