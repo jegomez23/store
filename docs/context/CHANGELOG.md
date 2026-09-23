@@ -4,6 +4,17 @@
 
 ---
 
+## Fase 10 — CSP y HSTS (2026-09-23)
+
+- **`Content-Security-Policy` en todas las rutas** y **`Strict-Transport-Security`** cuando `NEXT_PUBLIC_SITE_URL` es HTTPS (DEC-086). Cierran `default-src`, `object-src`, `frame-src`, `frame-ancestors`, `base-uri`, `form-action` y `media-src`, y limitan `img-src`/`connect-src` al propio origen más el de Supabase, derivado de `NEXT_PUBLIC_SUPABASE_URL`.
+- **`script-src` lleva `'unsafe-inline'`, y es una decisión, no un descuido**: la alternativa es un nonce por petición, que según los docs de Next 16 **desactiva el prerender y el ISR** de la tienda entera. Lo que la CSP impide y lo que no está escrito en `docs/08-SECURITY.md` §10.1.
+- **HSTS sin `preload`**: la lista de precarga de los navegadores es difícil de revertir y compromete a todo subdominio futuro. La decide el dueño del dominio.
+- **La lista de cabeceras sale de `lib/security/headers.ts`**, módulo puro con 26 tests; `next.config.ts` la importa, y un test falla si vuelve a escribirse a mano en la configuración.
+- **Corregida documentación obsoleta**: `CURRENT-STATE.md` listaba como pendiente un `robots.ts` que bloquease `/admin`. Existe desde la fase 9, y se comprobó sirviendo `/robots.txt`.
+- **Verificación:** las seis cabeceras se sirven (comprobado por HTTP contra el servidor de desarrollo); `lint`, `tsc` y los tests unitarios en verde. ⬜ **Sin navegador y sin `build`**: el proyecto de Supabase no responde, así que `next build` falla al recoger los datos de `/producto/[slug]` y los 14 ficheros `*.integration.test.ts` fallan con `fetch failed`. No se declara verificado lo que no lo está.
+
+---
+
 ## Incremento 20 — Admin minimalista y alta de producto asistida por IA (2026-09-11)
 
 - **La foto es lo primero.** `/admin/catalogo/nuevo` pasa de **13 campos y ninguna forma de subir una foto** a una sola pantalla: foto, cuatro campos imprescindibles y el resto plegado. El producto se crea **en borrador y con su imagen ya subida en el mismo envío** (`createProductWithPhotoAction`), reutilizando la tubería del catálogo (magic bytes → `sharp` → WebP → blur → `is_primary`).

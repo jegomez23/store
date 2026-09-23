@@ -29,7 +29,7 @@
 ## Rutas y cabeceras
 
 13. `app/robots.ts` (Fase 9) deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido`; el sitemap nunca incluye rutas privadas ni contenido no publicado. **`robots.txt` no es seguridad**: no sustituye a `proxy.ts`, `requireAdmin()` ni RLS, y nadie debe "arreglar" un fallo de acceso tocándolo.
-14. Headers de seguridad en `next.config.ts`: **HECHOS en Fase 9** (DEC-042) los cuatro de `08-SECURITY.md` §9. `Content-Security-Policy` y `Strict-Transport-Security` van en el deploy (Fase 11), no antes: la CSP hay que calibrarla en un navegador real y HSTS necesita el dominio HTTPS.
+14. Headers de seguridad: **no se escriben en `next.config.ts`**. Salen de `lib/security/headers.ts` (módulo puro con tests) y la configuración los importa; hay un test que falla si alguien vuelve a declarar la lista a mano. Los cuatro de Fase 9 (DEC-042) más `Content-Security-Policy` y `Strict-Transport-Security` desde Fase 10 (DEC-086). **No añadas un dominio de terceros a la CSP «por si acaso»**: cada origen de esa lista es un sitio desde el que el navegador aceptaría cargar algo. HSTS solo se emite si `NEXT_PUBLIC_SITE_URL` es HTTPS, y **nunca con `preload`**. Detalle y límites reales en `08-SECURITY.md` §10.
 15. El `blur_data_url` de una imagen lo genera SIEMPRE el servidor con `sharp`; jamás se acepta uno enviado por el navegador. Lo impone además un CHECK en PostgreSQL (migración 0022).
 
 ## Revisión

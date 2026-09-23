@@ -169,7 +169,7 @@
 - **Auditoría CWV / Lighthouse**: en este entorno **no hay navegador automatizado**. LCP, INP y CLS **no están medidos** y no se declara ningún presupuesto cumplido.
 - Redirect 301 al cambiar el slug de un producto (hoy el slug antiguo pasa a dar 404).
 - Backfill del blur de las 4 imágenes anteriores a Fase 9.
-- CSP y HSTS (van con el dominio real, Fase 11).
+- ~~CSP y HSTS~~ → **hechos en Fase 10** (DEC-086): `lib/security/headers.ts`. Falta comprobarlos en navegador.
 - Fuera del alcance documentado de esta fase y sin empezar: imágenes de home y logo, drag&drop de orden, `lib/i18n/`, promociones.
 
 **Criterios de aceptación:**

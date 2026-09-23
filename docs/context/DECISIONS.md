@@ -1806,3 +1806,23 @@ La causa: `isOutOfStock` exigía `selectedVariant !== null`, así que sin varian
 **Alternatives:** (a) Quitar rutas del menú: se pierde acceso a pantallas que hacen falta al montar la tienda. (b) Abrir el `<details>` en escritorio forzando `::details-content`: depende de cómo lo implemente cada motor, y un enlace inalcanzable por un detalle de CSS es peor que un clic de más. (c) Dejar las secciones vacías «para que se vea que el sistema las vigila»: es justo lo que empujaba el único aviso real fuera de la pantalla.
 
 **Consequences:** medido después: el menú pasa de **3 filas a 1** (4 enlaces visibles, el resto a un clic), el contenido empieza a **197 px** en vez de 245, y el inicio solo enseña secciones con algo dentro. El enlace de marca del panel, que medía **28 px**, pasa a 44. TTFB mediano de `/admin` 181 ms y FCP 484 ms sobre el build servido.
+
+## DEC-086 — CSP con `'unsafe-inline'` y HSTS solo con HTTPS: la tienda sigue siendo estática
+
+**Status:** Accepted *(Fase 10, sin migraciones, 2026-09-23)*
+
+**Context:** DEC-042 dejó cuatro cabeceras de seguridad y aplazó `Content-Security-Policy` y `Strict-Transport-Security` «al dominio real». El aplazamiento escondía una decisión sin tomar: **qué CSP**. Los docs de Next 16 (`node_modules/next/dist/docs/01-app/02-guides/content-security-policy.md`) son explícitos sobre el precio de la opción estricta: el nonce lo aplica el render del servidor leyendo la cabecera de la petición, así que «Static optimization and Incremental Static Regeneration (ISR) are disabled».
+
+**Decision:**
+
+- **CSP en todas las rutas, con `script-src 'self' 'unsafe-inline'`.** Se renuncia al nonce para no perder el prerender y el ISR de la portada, las fichas y el sitemap —justo lo que la fase 9 se dedicó a afinar—. La tienda **no carga ni un script de terceros** y el único HTML crudo que inyecta es el JSON-LD que genera el propio servidor, así que hoy no hay nada a lo que el nonce pudiera aplicarse.
+- **Lo demás se cierra**: `default-src 'self'`, `object-src 'none'`, `frame-src 'none'`, `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`, `media-src 'none'`, y `connect-src`/`img-src` limitados al propio origen más el de Supabase.
+- **El origen de Supabase se deriva de `NEXT_PUBLIC_SUPABASE_URL`**, no se escribe a mano. Si la variable falta o es inválida, la política queda **más estricta**, nunca rota.
+- **HSTS solo si `NEXT_PUBLIC_SITE_URL` es HTTPS**, `max-age=31536000; includeSubDomains`, **sin `preload`**: entrar en la lista de precarga de los navegadores es difícil de revertir y compromete a servir por HTTPS todo subdominio futuro. Eso lo decide el dueño del dominio.
+- **La lista vive en `lib/security/headers.ts`** —módulo puro, con tests— y `next.config.ts` la importa. Mismo criterio que el límite de subida del incremento 7: dos copias del mismo valor se separan sin que nada falle, así que hay un test que comprueba que la configuración no vuelve a escribirla a mano.
+
+**Alternatives:** (a) **Nonce en `proxy.ts` para todo**: desactiva el ISR de toda la tienda. Descartado. (b) **Nonce solo en `/admin`** (ya es `force-dynamic` y ya pasa por el proxy): es la mejora que queda anotada, pero exige comprobar en un navegador que el panel entero sigue funcionando, y hoy no se puede (el build falla sin base de datos). No se despliega a ciegas algo que puede dejar el panel en blanco. (c) **SRI experimental** (`experimental.sri`): mantiene el estático, pero es experimental y no cubre los scripts inline que Next emite con el payload de RSC. (d) **`Report-Only`**: no protege de nada y aquí no hay endpoint de informes ni navegador que los produzca.
+
+**Consequences:** lo que la CSP impide hoy: cargar un script de otro dominio, `<object>`/`<embed>`/`<iframe>`, reescribir `<base>`, que un formulario inyectado POSTee fuera y que un `fetch()` inyectado exfiltre a otro dominio. Lo que **no** impide: que se ejecute un `<script>` inline inyectado. Está escrito así en `docs/08-SECURITY.md` §10.1 para que nadie lo lea como más de lo que es.
+
+⚠️ **Verificado por HTTP, no en un navegador.** Las seis cabeceras se sirven (comprobado contra el servidor de desarrollo) y la construcción de la política tiene 26 tests, pero **ninguna página se ha cargado en Chrome con la CSP puesta**: `next build` lee el catálogo y falla mientras el proyecto de Supabase esté caído. Queda pendiente y declarado.

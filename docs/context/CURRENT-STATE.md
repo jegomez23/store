@@ -609,7 +609,7 @@ Conclusión honesta: **la deuda no era reproducible**. `revalidatePath('/', 'lay
 - **Auditoría CWV / Lighthouse**: LCP, INP y CLS **sin medir**. Requiere navegador.
 - **Backfill del blur** de las 4 imágenes anteriores a Fase 9 (siguen con `blur_data_url IS NULL` y se pintan sin placeholder). Exige descargar y reprocesar cada objeto: operación externa, no una migración.
 - **Redirect 301 al cambiar el slug** de un producto: hoy el slug antiguo pasa a dar 404. `09-SEO-PERFORMANCE.md` §38 lo prevé "en admin futuro".
-- **CSP y HSTS**: van con el dominio real (Fase 11, DEC-042).
+- ~~**CSP y HSTS**~~: **HECHOS en Fase 10** (DEC-086). Pendiente solo la comprobación en navegador, que exige `next build` y, por tanto, la base de datos en pie.
 - **`/categoria/[slug]` e `/info/[slug]`**: no existen; por eso no están en el sitemap ni en el breadcrumb (DEC-039).
 - **OG dinámica por producto**: diferida a propósito por la propia `09-SEO-PERFORMANCE.md` §29.
 - Heredado y sin tocar en esta fase: promociones, imágenes de home/logo, reset de contraseña, `lib/i18n/`, invalidación por tags, drag&drop.
@@ -900,8 +900,8 @@ Zustand, Framer Motion, shadcn/ui, React Hook Form, Zod. Ver `/docs/rules/fronte
 
 - [ ] GitHub Secrets — **único bloqueo externo pendiente** (DEC-021, `11-ENVIRONMENT.md` §4.1).
 - [ ] Subir imágenes reales a `products`/`content` y endurecer los buckets.
-- [ ] `robots.ts` que bloquee `/admin` (Fase 8). Hoy cada página del panel lleva `robots: { index: false }` en su metadata, pero no hay `robots.txt`.
-- [ ] Headers de seguridad en `next.config.ts` (Fase 10).
+- [x] `robots.ts` que bloquee `/admin` — **hecho en Fase 9**, no pendiente: `app/robots.ts` deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido` (verificado sirviendo `/robots.txt`). Esta línea llevaba obsoleta desde entonces. **No es seguridad**: lo que impide entrar sigue siendo `proxy.ts` → layout → `requireAdmin()` → RLS.
+- [x] Headers de seguridad — **CSP y HSTS hechos en Fase 10** (DEC-086), en `lib/security/headers.ts`. ⬜ Falta cargarlos en un navegador.
 - [ ] Rate limiting del checkout (Fase 10).
 - [ ] Recorrido manual en navegador real de tienda **y** panel.
 - [ ] Assets de marca reales y copy final aprobado — pendiente de Juan.
@@ -917,7 +917,9 @@ Dos cosas siguen esperando a Juan:
 1. **Promociones.** Bloqueada por la regla "promoción más favorable", que nadie ha definido. Afecta a precios, carrito, checkout y pedidos: no se puede implementar a medias.
 2. **Dominios definitivos.** Sin ellos, `NEXT_PUBLIC_SITE_URL` sigue en `localhost` y el sitemap de producción no sirve.
 
-Antes del deploy (Fase 11) quedan además: CSP y HSTS, el backfill del blur de las 4 imágenes del seed, y el redirect 301 al cambiar un slug.
+Antes del deploy (Fase 11) quedan además: el backfill del blur de las 4 imágenes del seed y el redirect 301 al cambiar un slug. **CSP y HSTS ya están** (DEC-086), a falta de cargarlos en un navegador.
+
+⚠️ **El proyecto de Supabase no responde** (`https://xyxxpnwzmmgarnrfmxax.supabase.co` → sin respuesta; internet sí funciona), y no hay Docker en esta máquina para levantar uno local. Consecuencia medida: los 14 ficheros `*.integration.test.ts` fallan con `fetch failed` y **`next build` falla** al recoger los datos de `/producto/[slug]`. Nada de eso es un fallo de código. Reanudar el proyecto en el dashboard de Supabase desbloquea los tests de integración, el build y toda verificación en navegador.
 
 ---
 

@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { ACTION_BODY_LIMIT_BYTES } from "./lib/admin/images";
+import { buildSecurityHeaders } from "./lib/security/headers";
 
 // Hostname derivado de NEXT_PUBLIC_SUPABASE_URL (sin hardcodear un
 // project-ref real). Si la variable no está configurada, remotePatterns
@@ -9,33 +10,28 @@ const supabaseHostname = process.env.NEXT_PUBLIC_SUPABASE_URL
   : undefined;
 
 /**
- * Headers de seguridad (Fase 9, `docs/08-SECURITY.md` §270).
+ * Headers de seguridad (fase 9 DEC-042, ampliados en fase 10 DEC-086).
  *
- * Son exactamente los tres que enumera esa sección más `nosniff`. Todos actúan
- * sobre el NAVEGADOR: no sustituyen a nada del lado servidor. Lo que protege
- * el panel sigue siendo `proxy.ts` → layout → `requireAdmin()` → RLS.
+ * La lista NO se escribe aquí: sale de `lib/security/headers.ts`, que es un
+ * módulo puro con tests. Mismo criterio que el límite de subida del incremento
+ * 7 — una sola fuente, y un test comprueba que esta configuración la importa en
+ * vez de volver a escribirla a mano.
  *
- * NO se añade `Content-Security-Policy`: Next inyecta scripts inline y
- * Tailwind estilos inline, así que una CSP mal calibrada rompe la tienda de
- * formas que en este entorno **no hay navegador para verificar**. Queda para el
- * deploy (Fase 11), donde se puede medir contra el dominio real.
+ * Todas actúan sobre el NAVEGADOR: no sustituyen a nada del lado servidor. Lo
+ * que protege el panel sigue siendo `proxy.ts` → layout → `requireAdmin()` →
+ * RLS.
  *
- * NO se añade `Strict-Transport-Security`: en local se sirve por HTTP y
- * marcarlo aquí no aporta nada. Va con el dominio de producción.
+ * Las dos nuevas dependen del ENTORNO, y por eso se resuelven aquí:
+ *   - la CSP necesita el origen de Supabase (imágenes de Storage y llamadas a
+ *     Auth desde el navegador del panel);
+ *   - `Strict-Transport-Security` solo se emite si `NEXT_PUBLIC_SITE_URL` es
+ *     HTTPS. En `http://localhost` no aporta nada y no se manda.
  */
-const securityHeaders = [
-  // La tienda no se embebe en ningún iframe legítimo: clickjacking fuera.
-  { key: "X-Frame-Options", value: "DENY" },
-  // Impide que el navegador "adivine" el tipo de un objeto de Storage.
-  { key: "X-Content-Type-Options", value: "nosniff" },
-  // No filtra la URL completa a terceros (una ficha de producto ya dice bastante).
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  // La tienda no usa cámara, micrófono ni geolocalización: se deniegan.
-  {
-    key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
-  },
-];
+const securityHeaders = buildSecurityHeaders({
+  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+  siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
+  isDev: process.env.NODE_ENV === "development",
+});
 
 const nextConfig: NextConfig = {
   /**

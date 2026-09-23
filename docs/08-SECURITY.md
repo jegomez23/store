@@ -267,7 +267,49 @@ Checklist anti-fuga (verificado en Fase 4.5, 2026-09-01):
 
 - Broken Access Control → RLS + verificación en actions ✅
 - Injection → queries parametrizadas (cliente Supabase) ✅
-- Security Misconfiguration → **HECHO en Fase 9** (DEC-042): `next.config.ts` sirve `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin` y una `Permissions-Policy` mínima en todas las rutas (verificado por HTTP en home, ficha y login). ⬜ `Content-Security-Policy` y `Strict-Transport-Security` quedan para el **deploy (Fase 11)**: la CSP exige calibrarse en un navegador real —Next inyecta scripts inline y Tailwind estilos inline— y HSTS necesita el dominio HTTPS definitivo
+- Security Misconfiguration → **HECHO en Fase 9** (DEC-042): `next.config.ts` sirve `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin` y una `Permissions-Policy` mínima en todas las rutas (verificado por HTTP en home, ficha y login). **Ampliado en Fase 10** (DEC-086): `Content-Security-Policy` en todas las rutas y `Strict-Transport-Security` cuando `NEXT_PUBLIC_SITE_URL` es HTTPS. La lista ya no se escribe en la configuración: sale de `lib/security/headers.ts`, módulo puro con 26 tests, y un test comprueba que `next.config.ts` lo importa en vez de repetirla
 - `robots.txt` (Fase 9) deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido`. **No es un control de acceso**: es una petición a los crawlers que se portan bien. Lo que impide entrar al panel sigue siendo `proxy.ts` → layout con `is_admin()` → `requireAdmin()` → RLS. Verificado en la misma ejecución: con `robots.txt` publicado, un anónimo sigue recibiendo un redirect al login en `/admin` y `/admin/pedidos`
 - El `sitemap.xml` solo lista contenido público (home y fichas publicadas). Un borrador o un producto eliminado no puede aparecer: se filtra en la query Y lo tapa RLS (comprobado con la clave anónima)
 - Identification/Auth failures → rate limiting de login (Supabase lo incluye; revisar umbrales)
+## 10. Cabeceras de seguridad (Fase 10, DEC-086)
+
+Se construyen en `lib/security/headers.ts` —módulo puro, sin `process.env`— y `next.config.ts` las importa. Ninguna de ellas es un control de acceso: actúan sobre el navegador. Lo que impide leer un dato sigue siendo `proxy.ts` → layout con `is_admin()` → `requireAdmin()` → RLS.
+
+| Cabecera | Valor | Desde |
+|---|---|---|
+| `X-Frame-Options` | `DENY` | Fase 9 |
+| `X-Content-Type-Options` | `nosniff` | Fase 9 |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Fase 9 |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), interest-cohort=()` | Fase 9 |
+| `Content-Security-Policy` | ver abajo | **Fase 10** |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | **Fase 10**, solo si el sitio es HTTPS |
+
+### 10.1 Qué niega la CSP, y qué no
+
+```
+default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'none';
+frame-ancestors 'none'; form-action 'self';
+script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+font-src 'self'; img-src 'self' data: blob: <supabase>;
+connect-src 'self' <supabase>; manifest-src 'self'; media-src 'none';
+worker-src 'self' blob:
+```
+
+**Sí impide**: cargar un script de otro dominio, `<object>`/`<embed>`/`<iframe>`, reescribir `<base>`, que un formulario inyectado POSTee fuera, que un `fetch()` inyectado exfiltre a otro dominio, y el clickjacking.
+
+**No impide**: que se ejecute un `<script>` **inline** inyectado, porque `script-src` lleva `'unsafe-inline'`.
+
+**Por qué `'unsafe-inline'`**: la alternativa es un nonce por petición, y los docs de Next 16 (`node_modules/next/dist/docs/01-app/02-guides/content-security-policy.md`) dicen que el nonce lo aplica el render del servidor leyendo la cabecera de la petición, así que **desactiva la generación estática y el ISR**. Esta tienda es estática e ISR a propósito. Hoy no carga ningún script de terceros y el único HTML crudo que inyecta es el JSON-LD que genera el propio servidor, así que el intercambio no compensa. El nonce —y limitarlo a `/admin`, que ya es `force-dynamic` y ya pasa por `proxy.ts`— queda anotado como el siguiente paso.
+
+### 10.2 Lo que depende del entorno
+
+- **Supabase**: el origen de `NEXT_PUBLIC_SUPABASE_URL` entra en `img-src` (objetos de Storage) y en `connect-src` (Auth desde el navegador del panel). Si la variable falta o está mal escrita, la política queda **más estricta**, nunca rota.
+- **HSTS y `upgrade-insecure-requests`**: solo si `NEXT_PUBLIC_SITE_URL` es `https://`. En `http://localhost` no se emiten.
+- **`preload` NO se incluye** en HSTS: entrar en la lista de precarga de los navegadores es difícil de revertir y obliga a servir por HTTPS todo subdominio futuro. Lo decide el dueño del dominio.
+- **Desarrollo**: `'unsafe-eval'` (React reconstruye stacks del servidor con `eval`) y `ws:`/`wss:` (hot reload de Turbopack). Ninguno de los dos se concede en producción.
+
+### 10.3 Qué está verificado y qué no
+
+- ✅ Las seis cabeceras se sirven: comprobado por HTTP contra el servidor de desarrollo (`GET /robots.txt` → 200 con la CSP completa).
+- ✅ La construcción de la política: 26 tests en `lib/security/__tests__/headers.test.ts`.
+- ⬜ **La CSP no se ha comprobado en un navegador.** Requiere `next build`, y el build lee el catálogo: con el proyecto de Supabase caído, `next build` falla en `/producto/[slug]`. Queda pendiente cargar la tienda y el panel en Chrome y comprobar que la consola no registra ninguna violación.
