@@ -308,8 +308,13 @@ worker-src 'self' blob:
 - **`preload` NO se incluye** en HSTS: entrar en la lista de precarga de los navegadores es difícil de revertir y obliga a servir por HTTPS todo subdominio futuro. Lo decide el dueño del dominio.
 - **Desarrollo**: `'unsafe-eval'` (React reconstruye stacks del servidor con `eval`) y `ws:`/`wss:` (hot reload de Turbopack). Ninguno de los dos se concede en producción.
 
-### 10.3 Qué está verificado y qué no
+⚠️ **Las cabeceras se congelan en el BUILD.** `headers()` se evalúa al construir y el resultado vive en `.next/routes-manifest.json`; `next start` solo lo sirve. Medido: con el servidor arrancado, cambiar `NEXT_PUBLIC_SITE_URL` a HTTPS **no** hizo aparecer HSTS; tras `npm run build`, sí. El entorno del build es el que manda.
 
-- ✅ Las seis cabeceras se sirven: comprobado por HTTP contra el servidor de desarrollo (`GET /robots.txt` → 200 con la CSP completa).
-- ✅ La construcción de la política: 26 tests en `lib/security/__tests__/headers.test.ts`.
-- ⬜ **La CSP no se ha comprobado en un navegador.** Requiere `next build`, y el build lee el catálogo: con el proyecto de Supabase caído, `next build` falla en `/producto/[slug]`. Queda pendiente cargar la tienda y el panel en Chrome y comprobar que la consola no registra ninguna violación.
+### 10.3 Qué está verificado (2026-09-23, Chrome 153 headless, 390×844, build servido)
+
+- ✅ **CSP enforzada en navegador, sin una sola violación** en `/`, `/producto/[slug]`, `/carrito`, `/checkout`, `/admin/login`, `/admin/recuperar`, `/admin`, `/admin/catalogo`, `/admin/catalogo/nuevo`, `/admin/inventario`, `/admin/pedidos`, `/admin/ajustes` y `/admin/atributos`. Cero errores de consola y cero recursos legítimos bloqueados.
+- ✅ **Se comprobó que bloquea de verdad**: un `fetch('data:image/jpeg;base64,…')` lanzado desde la consola murió con `TypeError: Failed to fetch` por `connect-src`. Ningún código de la aplicación hace eso —la previsualización de la foto usa `URL.createObjectURL` como `src`, cubierto por `img-src blob:`, y el único `fetch()` a un origen externo (`opengraph-image`) corre en el servidor, donde la CSP no aplica—.
+- ✅ **HSTS**: con `NEXT_PUBLIC_SITE_URL=https://…` en el build, la respuesta trae `Strict-Transport-Security: max-age=31536000; includeSubDomains` y la CSP añade `upgrade-insecure-requests`. Con `http://localhost`, ninguna de las dos. Sin `preload`.
+- ✅ **Sin regresión** de las cuatro cabeceras de Fase 9: las seis viajan juntas, también en el 307 de `/admin` hacia el login.
+- ✅ **1140/1140 tests** (`npm test`), integración incluida, contra el proyecto real.
+- ✅ **`robots.txt`** mantiene los cinco `Disallow` sobre el build servido.

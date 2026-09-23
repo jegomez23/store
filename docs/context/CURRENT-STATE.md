@@ -919,7 +919,29 @@ Dos cosas siguen esperando a Juan:
 
 Antes del deploy (Fase 11) quedan además: el backfill del blur de las 4 imágenes del seed y el redirect 301 al cambiar un slug. **CSP y HSTS ya están** (DEC-086), a falta de cargarlos en un navegador.
 
-⚠️ **El proyecto de Supabase ya no existe en el DNS** (medido el 2026-09-23). No es «lento» ni «pausado»: el nombre no resuelve.
+✅ **RESUELTO el 2026-09-23: Juan despausó el proyecto y la verificación se ejecutó entera.** Lo de abajo queda como registro de lo que estuvo bloqueado y de cómo se diagnosticó.
+
+**Resultado de la verificación** (Chrome 153 headless, 390×844, `next build` + `next start`):
+
+| Comprobación | Resultado |
+|---|---|
+| `npm run lint` · `npx tsc --noEmit` | limpios |
+| `npm test` | **1140/1140**, integración incluida |
+| `npm run build` | correcto; las 4 fichas vuelven a prerenderizarse (SSG) |
+| CSP en 13 rutas de tienda y panel | **0 violaciones**, 0 errores de consola, 0 recursos bloqueados |
+| HSTS | aparece solo con build HTTPS: `max-age=31536000; includeSubDomains`, sin `preload` |
+| Alta de producto con foto real | producto en `draft`, WebP en Storage, `is_primary`, blur generado en servidor |
+| Borrador en público | 404 y fuera del `sitemap.xml` |
+| IA | **fallback verificado**: sin `ANTHROPIC_API_KEY` el botón sale deshabilitado con «Asistente no configurado: rellena la ficha a mano» y el alta funciona igual |
+| Objetivos táctiles <44 px en `/admin` | ninguno |
+| Scroll horizontal a 390 px | ninguno |
+| Baseline | restaurado: 4 productos, 9 variantes, 0 imágenes, 0 pedidos, 1 perfil, 1 usuario, bucket vacío |
+
+⚠️ **`headers()` se congela en el build**: cambiar `NEXT_PUBLIC_SITE_URL` con el servidor arrancado no cambia las cabeceras; hay que reconstruir.
+
+<details><summary>Diagnóstico del bloqueo (histórico)</summary>
+
+⚠️ **El proyecto de Supabase ya no existía en el DNS** (medido el 2026-09-23, antes de despausarlo). No era «lento» ni «pausado»: el nombre no resolvía.
 
 ```
 nslookup xyxxpnwzmmgarnrfmxax.supabase.co   → Non-existent domain
@@ -942,6 +964,10 @@ Consecuencia medida, toda ella bloqueada por esto y **ninguna por el código**:
 | CSP real en Chrome 390×844 (DEC-086) | ⬜ depende de `next start` |
 | Recorrido de tienda, panel y checkout en navegador | ⬜ depende de `next start` |
 | Calidad de una sugerencia real de IA (incremento 20) | ⬜ además falta `ANTHROPIC_API_KEY` |
+
+</details>
+
+**Único pendiente que sobrevive a la verificación:** la **calidad de una sugerencia real de IA**. Sigue sin haber `ANTHROPIC_API_KEY`, así que lo probado es el camino sin asistente (escenario B). Lo demás está verde.
 
 ---
 

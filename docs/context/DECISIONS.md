@@ -1825,4 +1825,6 @@ La causa: `isOutOfStock` exigía `selectedVariant !== null`, así que sin varian
 
 **Consequences:** lo que la CSP impide hoy: cargar un script de otro dominio, `<object>`/`<embed>`/`<iframe>`, reescribir `<base>`, que un formulario inyectado POSTee fuera y que un `fetch()` inyectado exfiltre a otro dominio. Lo que **no** impide: que se ejecute un `<script>` inline inyectado. Está escrito así en `docs/08-SECURITY.md` §10.1 para que nadie lo lea como más de lo que es.
 
-⚠️ **Verificado por HTTP, no en un navegador.** Las seis cabeceras se sirven (comprobado contra el servidor de desarrollo) y la construcción de la política tiene 26 tests, pero **ninguna página se ha cargado en Chrome con la CSP puesta**: `next build` lee el catálogo y falla mientras el proyecto de Supabase esté caído. Queda pendiente y declarado.
+✅ **Verificado en Chrome 153 headless a 390×844 sobre el build servido (2026-09-23):** trece rutas de tienda y panel **sin una sola violación de CSP**, sin errores de consola y sin recursos legítimos bloqueados. Se comprobó además que la política **bloquea de verdad** (un `fetch('data:…')` desde consola muere por `connect-src`) y que HSTS aparece —y `upgrade-insecure-requests` con él— solo cuando el build lleva un `NEXT_PUBLIC_SITE_URL` HTTPS.
+
+⚠️ **Las cabeceras se congelan en el BUILD**, no al arrancar: `headers()` se evalúa al construir y se guarda en `.next/routes-manifest.json`. Medido — cambiar la variable con el servidor en marcha no cambió nada; tras `npm run build`, sí.

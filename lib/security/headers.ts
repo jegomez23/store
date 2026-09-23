@@ -44,6 +44,14 @@
  *
  * ⚠️ NO AÑADIR AQUÍ un dominio de terceros «por si acaso». Cada origen de esta
  * lista es un sitio desde el que un navegador aceptaría cargar algo.
+ *
+ * ⚠️ **ESTAS CABECERAS SE CONGELAN EN EL BUILD.** `headers()` de `next.config.ts`
+ * se evalúa al construir y el resultado se escribe en `.next/routes-manifest.json`;
+ * `next start` se limita a servir eso. Medido: con el servidor ya arrancado,
+ * cambiar `NEXT_PUBLIC_SITE_URL` a `https://…` **no** hizo aparecer HSTS, y tras
+ * `npm run build` apareció en la misma petición. Consecuencia práctica: el
+ * entorno del **build** es el que decide si se emite HSTS, así que la variable
+ * tiene que estar bien en el momento de construir, no solo al desplegar.
  */
 
 /** Cabecera HTTP tal y como la espera `headers()` de Next. */

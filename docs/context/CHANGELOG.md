@@ -4,6 +4,20 @@
 
 ---
 
+## Verificación real de la base (2026-09-23)
+
+Con el proyecto de Supabase de vuelta, se ejecutó entera la verificación que estaba bloqueada. **Sin cambios de comportamiento**: solo documentación.
+
+- **1140/1140 tests**, integración incluida. `next build` vuelve a prerenderizar las 4 fichas.
+- **CSP enforzada y sin una sola violación** en 13 rutas de tienda y panel (Chrome 153 headless, 390×844, build servido). Se comprobó que bloquea de verdad: un `fetch('data:…')` desde consola muere por `connect-src`, y ningún código de la aplicación hace eso.
+- **HSTS** aparece —con `upgrade-insecure-requests`— solo cuando el build lleva `NEXT_PUBLIC_SITE_URL` HTTPS, `max-age=31536000; includeSubDomains`, sin `preload`.
+- ⚠️ **Descubierto y documentado:** `headers()` se evalúa en el BUILD y se guarda en `.next/routes-manifest.json`. Cambiar la variable con el servidor arrancado no cambia nada; hay que reconstruir.
+- **Alta de producto de extremo a extremo** con foto real: producto en `draft`, WebP en Storage, `is_primary`, blur del servidor, y el borrador da 404 en público y no entra en el sitemap.
+- **IA: fallback verificado**, no la calidad real. Sin `ANTHROPIC_API_KEY` el botón «Analizar foto» sale deshabilitado con un mensaje claro y el alta funciona igual.
+- **Baseline restaurado**: el admin y el producto de prueba se borraron; 4 productos, 9 variantes, 0 imágenes, 0 pedidos, 1 perfil, 1 usuario, bucket vacío.
+
+---
+
 ## Fase 10 — CSP y HSTS (2026-09-23)
 
 - **`Content-Security-Policy` en todas las rutas** y **`Strict-Transport-Security`** cuando `NEXT_PUBLIC_SITE_URL` es HTTPS (DEC-086). Cierran `default-src`, `object-src`, `frame-src`, `frame-ancestors`, `base-uri`, `form-action` y `media-src`, y limitan `img-src`/`connect-src` al propio origen más el de Supabase, derivado de `NEXT_PUBLIC_SUPABASE_URL`.
