@@ -182,3 +182,18 @@ Español neutro; adaptaciones léxicas por mercado documentadas en `07-MULTI-MAR
 - `alt` obligatorio en toda imagen de producto.
 - Focus visible en navegación por teclado.
 - Selectores de talla/color como botones reales con `aria-pressed`, no divs.
+---
+
+## Ficha de producto: lo que decide una venta (incremento 19)
+
+Tres reglas salidas de medir la ficha real en Chrome a 390×844, no de criterio estético.
+
+**1. El botón de comprar entra en la primera pantalla.** Medido antes: el hueco de una foto inexistente (proporción 3/4 = 520 px) empujaba el CTA a **1108 px**, 1,3 pantallas de scroll para quien llega de un anuncio. Sin foto el hueco pasa a proporción ancha y el CTA queda a **832 px**. Con foto real se mantiene el retrato 3/4, que es el formato de la fotografía de producto y el que decide el LCP (DEC-082).
+
+**2. Agotado se DICE, no se deduce.** Un producto sin stock en ninguna variante deshabilita los dos CTA, muestra «Agotado por ahora» junto al precio y **deja de pedir que se elija una talla** que no se puede pulsar. La ficha sigue respondiendo 200 y sigue en el sitemap: un agotado se enseña, simplemente no se compra hoy (DEC-081).
+
+**3. El envío se dice antes del checkout, y sale de `shipping_methods`.** Nunca un importe escrito a mano, nunca un plazo de entrega —no existe ninguna columna que lo guarde—, y nada en absoluto si no hay métodos configurados (DEC-080).
+
+⚠️ **Prohibido rellenar la ficha con copy comercial inventado**: materiales, composición, garantías, plazos o devoluciones. Si el modelo no lo guarda, la ficha no lo dice. Hay tests que fallan si aparece una promesa escrita en el código.
+
+⚠️ **El carrito no llama «Total» a un subtotal.** El envío se suma en `create_order`; hasta entonces la cifra es un subtotal y así se rotula.

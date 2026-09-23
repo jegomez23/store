@@ -297,9 +297,14 @@ export interface UnsellableProduct {
  *
  * AHORA lo resuelve `admin_unsellable_products` (migración 0029), que usa
  * EXACTAMENTE el mismo predicado que los contó —`product_is_sellable`— para
- * que la lista y el número no puedan discrepar. PostgREST no sabe expresar un
- * `NOT EXISTS`, así que la función SQL no es un capricho: es la única forma de
- * resolverlo sin traerse el catálogo entero y filtrar en JavaScript.
+ * que la lista y el número no puedan discrepar.
+ *
+ * NOTA (incremento P2): este comentario decía que "PostgREST no sabe expresar
+ * un NOT EXISTS". **Es falso y está comprobado**: `product_images!left(id)` con
+ * `product_images=is.null` lo expresa, y así se resuelve el detector de
+ * productos sin foto, sin función SQL. Lo que justifica la RPC aquí es otra
+ * cosa: el predicado `product_is_sellable` mira el stock y el `is_active` de
+ * las variantes y además calcula el `reason`, y eso sí necesita SQL.
  *
  * Separa además los dos motivos, porque se arreglan de forma distinta:
  * `sin_variante_activa` da 404 y `agotado` se muestra como "Agotado".
@@ -334,6 +339,124 @@ export async function listUnsellableProducts(
   }));
 }
 
+/* ─────────────────── Publicados sin foto (incremento P2) ─────────────────
+ *
+ * QUÉ ES, EXACTAMENTE. Un producto **publicado** (`status = 'active'` y
+ * `deleted_at is null`, que es lo mismo que ya usan el sitemap, la ficha
+ * pública y `admin_unsellable_products`) del que la tienda **no puede pintar
+ * ninguna fotografía**.
+ *
+ * Y "no puede pintar ninguna" no es una interpretación: es lo que hace el
+ * código que renderiza. `resolveImageUrl` en `lib/data/products.ts` es
+ * `if (!path) return null`, y `RemoteImage` con `src = null` cae a
+ * `MockImage`. Una fila de imagen con `url = ''` produce exactamente el mismo
+ * recuadro gris que no tener ninguna fila — y `url = ''` **se puede insertar**:
+ * la columna es NOT NULL pero no rechaza la cadena vacía (comprobado contra el
+ * proyecto real; hoy no hay ninguna). Por eso el predicado descarta las filas
+ * con url vacía en vez de limitarse a contar filas.
+ *
+ * QUÉ NO ES:
+ *   · NO es una regla de publicación. Un producto sin foto se publica, se
+ *     vende y su ficha responde 200. Esto solo lo hace ENCONTRABLE.
+ *   · NO es lo mismo que `unsellable_products`. Aquel cuenta lo que no se
+ *     puede comprar; este, lo que se compra sin verse. Van por separado a
+ *     propósito y no se suman en ningún sitio.
+ *
+ * DÓNDE SE RESUELVE: entero en PostgreSQL. `product_images!left(id)` con
+ * `product_images=is.null` es el `NOT EXISTS`, y `product_images.url=neq.`
+ * descarta antes las filas inservibles. No viaja ni un producto de más, y el
+ * recuento usa `head: true`: **no viaja ninguna fila**.
+ */
+
+export interface ProductWithoutImage {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+/**
+ * El predicado, en UN solo sitio.
+ *
+ * La lección de 5B fue que el número del aviso y la lista que abre tienen que
+ * salir del mismo sitio o acaban discrepando. Allí se resolvió con una función
+ * SQL compartida; aquí, compartiendo el constructor de la consulta.
+ */
+function withoutImageQuery(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  market: ActiveMarket,
+  select: string,
+  options?: { count: "exact"; head: true },
+) {
+  return supabase
+    .from("products")
+    .select(select, options)
+    .eq("market_id", market.id)
+    .eq("status", "active")
+    .is("deleted_at", null)
+    // Filtro sobre el recurso EMBEBIDO: se queda con las imágenes utilizables.
+    .neq("product_images.url", "")
+    // …y el producto entra solo si, tras ese filtro, no le queda ninguna.
+    .is("product_images", null);
+}
+
+/** Cuántos hay. Sin traer ni una fila (`head: true`). */
+export async function countProductsWithoutImage(market: ActiveMarket): Promise<number> {
+  if (!(await requireAdmin())) return 0;
+
+  const supabase = await createClient();
+
+  const { count, error } = await withoutImageQuery(
+    supabase,
+    market,
+    "id, product_images!left(id)",
+    { count: "exact", head: true },
+  );
+
+  if (error) {
+    console.error("[admin] countProductsWithoutImage falló", {
+      marketId: market.id,
+      code: error.code,
+      message: error.message,
+    });
+    return 0;
+  }
+
+  return count ?? 0;
+}
+
+/** Cuáles son. Mismo predicado que el recuento, por construcción. */
+export async function listProductsWithoutImage(
+  market: ActiveMarket,
+  limit = 50,
+): Promise<ProductWithoutImage[]> {
+  if (!(await requireAdmin())) return [];
+
+  const supabase = await createClient();
+
+  const { data, error } = await withoutImageQuery(
+    supabase,
+    market,
+    "id, name, slug, product_images!left(id)",
+  )
+    .order("name")
+    .limit(limit);
+
+  if (error) {
+    console.error("[admin] listProductsWithoutImage falló", {
+      marketId: market.id,
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+
+  return (data as unknown as { id: string; name: string; slug: string }[]).map((row) => ({
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+  }));
+}
+
 /**
  * Historial de decisiones sobre un producto (Fase 9.5, 5C, migración 0032).
  *
@@ -347,14 +470,20 @@ export async function listUnsellableProducts(
  * en el checkout— y las cancelaciones tampoco, porque `order_events` ya las
  * cubre. La interfaz lo llama "Historial de cambios", no "movimientos".
  *
- * El mercado no se filtra aquí porque no se guarda: se deriva del producto, y
- * quien llama ya lo ha resuelto contra el mercado activo.
+ * El mercado no se filtra aquí porque no se guarda: se deriva del producto. La
+ * policy de la migración 0033 hace ese mismo `exists` contra `products`, así
+ * que un mercado apagado esconde su historial aunque quien llame se despiste.
+ *
+ * SE PIDE UNA FILA DE MÁS de las que se pintan. No es para pintarla: es la
+ * única forma de saber si el administrador está viendo el historial ENTERO o
+ * solo su cola, y de decírselo. Un "últimos 20" silencioso se lee como "esto
+ * es todo lo que pasó", que es justo la conclusión equivocada.
  */
 export async function listProductChanges(
   productId: string,
   limit = 20,
-): Promise<ChangeEntry[]> {
-  if (!(await requireAdmin())) return [];
+): Promise<{ entries: ChangeEntry[]; hasMore: boolean }> {
+  if (!(await requireAdmin())) return { entries: [], hasMore: false };
 
   const supabase = await createClient();
 
@@ -365,13 +494,15 @@ export async function listProductChanges(
     )
     .eq("product_id", productId)
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(limit + 1);
 
   if (error) {
     throw new Error(`No se pudo cargar el historial: ${error.message}`);
   }
 
-  return (data ?? []).flatMap((row) => {
+  const hasMore = (data ?? []).length > limit;
+
+  const entries = (data ?? []).slice(0, limit).flatMap((row) => {
     // El CHECK de la tabla ya garantiza los valores; esto estrecha el tipo sin
     // un `as`, y descarta la fila si algún día se añadiera un campo nuevo.
     if (!isChangeField(row.field_name) || !isChangeSource(row.source)) return [];
@@ -388,6 +519,8 @@ export async function listProductChanges(
       },
     ];
   });
+
+  return { entries, hasMore };
 }
 
 function isChangeField(value: string): value is ChangeField {
@@ -396,4 +529,83 @@ function isChangeField(value: string): value is ChangeField {
 
 function isChangeSource(value: string): value is ChangeSource {
   return (CHANGE_SOURCES as readonly string[]).includes(value);
+}
+
+/* ──────────── Imágenes rotas: la fila existe, el objeto NO (incremento 10) ───
+ *
+ * DISTINTO DE P2, y a propósito. P2 detecta productos publicados que no tienen
+ * NINGUNA imagen utilizable. Esto detecta lo contrario: la fila está ahí, el
+ * panel dice que el producto tiene foto y el cliente ve un hueco, porque el
+ * objeto no existe en Storage.
+ *
+ * Fue exactamente el estado de la tienda hasta este incremento: cuatro filas
+ * sembradas, cero objetos subidos, `/_next/image` devolviendo 400 y P2
+ * informando —con razón y sin utilidad— de que todos los productos tenían foto.
+ *
+ * ¿POR QUÉ UNA RPC Y NO PostgREST? Porque el dato vive en `storage.objects`,
+ * que no está expuesto por PostgREST y tiene su propia RLS. Cruzar las dos
+ * tablas desde TypeScript sería una consulta por producto (N+1) y además no
+ * podría leer Storage sin `service_role`. La migración 0037 lo resuelve con un
+ * `not exists` dentro de PostgreSQL: una consulta, sin service role, con la
+ * puerta `is_admin()` DENTRO del WHERE.
+ */
+
+export interface BrokenProductImage {
+  productId: string;
+  productName: string;
+  productSlug: string;
+  imageId: string;
+  imageUrl: string;
+  isPrimary: boolean;
+}
+
+/**
+ * Filas cuyo objeto no existe en el bucket.
+ *
+ * `requireAdmin()` aquí ADEMÁS de `is_admin()` en la función: el layout no
+ * frena el render de la página hermana en RSC, así que cada función de
+ * `lib/data/admin/` lleva su propia puerta (DEC-034).
+ */
+export async function listBrokenProductImages(
+  market: ActiveMarket,
+): Promise<BrokenProductImage[]> {
+  if (!(await requireAdmin())) return [];
+
+  const supabase = await createClient();
+
+  const { data, error } = await supabase.rpc("admin_products_with_broken_images", {
+    p_market_id: market.id,
+  });
+
+  if (error) {
+    console.error("[admin] listBrokenProductImages falló", {
+      marketId: market.id,
+      code: error.code,
+      message: error.message,
+    });
+    return [];
+  }
+
+  return (data ?? []).map((row) => ({
+    productId: row.product_id,
+    productName: row.product_name,
+    productSlug: row.product_slug,
+    imageId: row.image_id,
+    imageUrl: row.image_url,
+    isPrimary: row.is_primary,
+  }));
+}
+
+/**
+ * Cuántos productos DISTINTOS tienen al menos una imagen rota.
+ *
+ * Se cuentan productos y no filas porque es lo que hay que ir a arreglar: dos
+ * fotos rotas del mismo producto son una sola visita al panel. Se deriva de la
+ * misma llamada, así que el número y la lista no pueden discrepar.
+ */
+export async function countProductsWithBrokenImages(
+  market: ActiveMarket,
+): Promise<number> {
+  const rows = await listBrokenProductImages(market);
+  return new Set(rows.map((row) => row.productId)).size;
 }

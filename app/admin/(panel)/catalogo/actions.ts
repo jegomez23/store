@@ -4,7 +4,16 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/admin/auth";
 import { isProductStatus, parsePrice, parseStock } from "@/lib/admin/catalog";
-import { catalogErrorMessage, isUuid, validateProductInput } from "@/lib/admin/products";
+// Crear producto CON foto en un solo paso (incremento 20): se reutiliza la
+// misma tubería de imágenes del catálogo, sin una segunda.
+import { buildAutoAltText } from "@/lib/admin/images";
+import { discardOrphanObject, uploadProductImage } from "@/lib/storage/product-images";
+import {
+  catalogErrorMessage,
+  isUuid,
+  parseSupplierRef,
+  validateProductInput,
+} from "@/lib/admin/products";
 import { parseSlug, slugify } from "@/lib/admin/slug";
 import {
   buildMissingCombinations,
@@ -67,6 +76,7 @@ function readProductForm(formData: FormData) {
       // Slug vacío → se deriva del nombre. Es lo que espera el admin al crear.
       slug: readString(formData, "slug").trim() || slugify(readString(formData, "name")),
       categoryId: readString(formData, "categoryId"),
+      supplier: readOptional(formData, "supplier"),
       shortDescription: readOptional(formData, "shortDescription"),
       description: readOptional(formData, "description"),
       materials: readOptional(formData, "materials"),
@@ -103,6 +113,7 @@ export async function createProductAction(
       category_id: parsed.input.categoryId,
       name: parsed.input.name,
       slug: parsed.input.slug,
+      supplier: parsed.input.supplier,
       short_description: parsed.input.shortDescription,
       description: parsed.input.description,
       materials: parsed.input.materials,
@@ -159,6 +170,7 @@ export async function updateProductAction(
       category_id: parsed.input.categoryId,
       name: parsed.input.name,
       slug: parsed.input.slug,
+      supplier: parsed.input.supplier,
       short_description: parsed.input.shortDescription,
       description: parsed.input.description,
       materials: parsed.input.materials,
@@ -295,6 +307,11 @@ export async function updateVariantAction(
     return { error: "El aviso de stock bajo debe ser un número entero.", success: null };
   }
 
+  // Incremento 13: la referencia externa se edita AQUÍ, junto al stock, porque
+  // es el nivel al que llega la disponibilidad ("ABC-123 negro M → 4").
+  const supplierRef = parseSupplierRef(readOptional(formData, "supplierRef"));
+  if (!supplierRef.ok) return { error: supplierRef.error, success: null };
+
   const isActive = checked(formData, "isActive");
   const expectedUpdatedAt = readString(formData, "expectedUpdatedAt");
 
@@ -322,9 +339,11 @@ export async function updateVariantAction(
    * usa deltas atómicos (`admin_restock_variants`), que no necesitan testigo
    * porque una suma no depende del valor de partida.
    *
-   * Solo estas cuatro columnas: `product_id`, `sku`, `color_id` y `size_id` no
-   * se tocan — cambiarlos reescribiría la identidad de la variante y rompería
-   * los snapshots de los pedidos que la referencian.
+   * `product_id`, `sku`, `color_id` y `size_id` NO se tocan — cambiarlos
+   * reescribiría la identidad de la variante y rompería los snapshots de los
+   * pedidos que la referencian. `supplier_ref` sí es editable: señala el
+   * artículo en el catálogo del proveedor, no identifica la variante, y no
+   * viaja a ningún pedido.
    */
   let update = supabase
     .from("product_variants")
@@ -333,6 +352,7 @@ export async function updateVariantAction(
       price: price.value,
       low_stock_threshold: threshold.value,
       is_active: isActive,
+      supplier_ref: supplierRef.value,
     })
     .eq("id", variantId);
 
@@ -467,4 +487,99 @@ export async function createVariantMatrixAction(
     error: null,
     success: `${created} ${created === 1 ? "variante creada" : "variantes creadas"}.`,
   };
+}
+
+/**
+ * Crear producto CON su foto, en un solo paso (incremento 20).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POR QUÉ NO BASTABA `createProductAction`
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Antes, crear un producto era: rellenar 13 campos → guardar → abrir la ficha →
+ * bajar hasta Imágenes → subir la foto. Medido: 13 campos visibles, 2,5
+ * pantallas de formulario y **ningún control de archivo** en la pantalla de
+ * creación. La foto, que es lo primero que tiene el administrador y lo único
+ * que el cliente va a mirar, era el último paso.
+ *
+ * Aquí la foto es opcional pero va en el mismo envío: un producto nuevo sale
+ * con su imagen puesta sin pasar por una segunda pantalla.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * EL ORDEN IMPORTA: PRIMERO LA FILA, DESPUÉS EL OBJETO
+ * ═══════════════════════════════════════════════════════════════════════════
+ * La ruta del objeto en Storage se compone con el SLUG del producto
+ * (`buildImagePath`), así que el producto tiene que existir antes. Si la foto
+ * falla, **el producto se queda creado** y se avisa: es mucho mejor que perder
+ * los datos que el administrador acaba de revisar. La foto se sube después
+ * desde la ficha, que es el camino que ya existe.
+ *
+ * La IA no interviene aquí. Llega lo que haya en el formulario, venga de una
+ * sugerencia aceptada o escrito a mano: para esta action son indistinguibles,
+ * y ese es justamente el punto (incremento 20, DEC-083).
+ */
+export async function createProductWithPhotoAction(
+  _prev: CatalogActionState,
+  formData: FormData,
+): Promise<CatalogActionState> {
+  if (!(await requireAdmin())) return { error: FORBIDDEN, success: null };
+
+  const parsed = readProductForm(formData);
+  if (!parsed.ok) return { error: parsed.error, success: null };
+
+  const market = await getActiveMarket();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("products")
+    .insert({
+      market_id: market.id, // del servidor, NUNCA del formulario
+      category_id: parsed.input.categoryId,
+      name: parsed.input.name,
+      slug: parsed.input.slug,
+      supplier: parsed.input.supplier,
+      short_description: parsed.input.shortDescription,
+      description: parsed.input.description,
+      materials: parsed.input.materials,
+      care_instructions: parsed.input.careInstructions,
+      shipping_info_override: parsed.input.shippingInfoOverride,
+      meta_title: parsed.input.metaTitle,
+      meta_description: parsed.input.metaDescription,
+      is_featured: parsed.input.isFeatured,
+      is_new: parsed.input.isNew,
+      status: "draft", // publicar sigue siendo un acto explícito y aparte
+    })
+    .select("id, slug")
+    .maybeSingle();
+
+  if (error || !data) {
+    console.error("[admin] createProductWithPhoto falló", { code: error?.code });
+    return { error: catalogErrorMessage(error?.code, GENERIC, error?.message), success: null };
+  }
+
+  const photo = formData.get("photo");
+  if (photo instanceof File && photo.size > 0) {
+    const uploaded = await uploadProductImage(photo, data.slug);
+    if (uploaded.ok) {
+      const { error: rowError } = await supabase.from("product_images").insert({
+        product_id: data.id,
+        url: uploaded.path,
+        alt_text: buildAutoAltText(parsed.input.name, 1),
+        sort_order: 1,
+        is_primary: true,
+        blur_data_url: uploaded.blurDataUrl,
+      });
+      if (rowError) {
+        // Objeto sin fila: se descarta para no dejar bytes sin dueño (DEC-036).
+        await discardOrphanObject(uploaded.path);
+        console.error("[admin] la fila de imagen falló al crear", { code: rowError.code });
+      }
+    } else {
+      console.error("[admin] la foto no se pudo subir al crear el producto");
+    }
+    // El fallo de la foto NO tira el producto: se avisa en la ficha, que ya
+    // detecta los publicados sin imagen (P2).
+  }
+
+  revalidatePath("/admin/catalogo");
+  redirect(`/admin/catalogo/${data.id}`);
 }

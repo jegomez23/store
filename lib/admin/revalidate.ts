@@ -18,14 +18,28 @@ import { revalidatePath } from "next/cache";
  *   activar/desactivar/parent    páginas + home
  * Home bloque editar/orden     home                    revalidateHome()
  * Ajustes WhatsApp             /checkout               revalidatePath("/checkout")
- * Ajustes nombre/email/redes   nada público hoy(*)     revalidateStorefront()
+ * Ajustes nombre/frase/email   TÍTULO, Header, Footer  revalidateStorefront()
+ *   /redes (inc. 15 y 16)        Open Graph y portada
+ * Ajustes LOGO subir/quitar    Header de toda la       revalidateStorefront()
+ *   (incremento 17)              tienda + portada OG
+ * Entrega crear/editar/borrar  FICHA y CARRITO dicen   revalidateStorefront()
+ *   (inc. 9, ampliado en el 19)   el coste del envío
  * Pedido cancelado             fichas de los productos revalidateProducts(slugs)
  *   (devuelve stock, DEC-033)    del pedido + home
  *
- * (*) `settings.store_name`, `contact_email` y las redes NO se pintan hoy en
- * ninguna página pública: el Footer y el logo del Header son texto fijo. Se
- * invalida igualmente porque en cuanto el Footer los lea dejaría de hacerlo, y
- * un fallo de caché silencioso es peor que una invalidación de más.
+ * Desde el incremento 15 esa invalidación **ya no es preventiva**: el Footer
+ * pinta `store_name`, `contact_email` y las redes en TODAS las páginas de la
+ * tienda, así que sin `revalidateStorefront()` el administrador vería su email
+ * guardado y el cliente seguiría viendo el anterior hasta 5 minutos. Antes de
+ * ese incremento el comentario avisaba de que esto pasaría; ahora pasa.
+ *
+ * El incremento 16 amplía ese alcance y conviene tenerlo presente antes de
+ * "optimizar" esta llamada a algo más fino: `store_name` y `tagline` salen en
+ * el `<title>` y el `<meta description>` de TODAS las páginas de la tienda, en
+ * el logo del Header, en el Footer, en el Open Graph de la home y de cada
+ * ficha, y en `app/opengraph-image.tsx` —que desde ese incremento es ISR de 5
+ * min y cuelga del layout raíz, así que `revalidatePath("/", "layout")` la
+ * alcanza—. No hay una ruta literal que baste: lo que cambia es el chrome.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * POR QUÉ ESTAS PRIMITIVAS Y NO OTRAS

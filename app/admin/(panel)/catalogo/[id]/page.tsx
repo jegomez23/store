@@ -109,7 +109,9 @@ export default async function EditProductPage(
 
       <section aria-labelledby="imagenes" className="flex flex-col gap-3">
         {/* TODO(i18n) */}
-        <h2 id="imagenes" className="text-base font-medium text-black">
+        {/* scroll-mt: sin él, el salto desde «sin foto» deja el título
+            pegado al borde superior y parece otra pantalla. */}
+        <h2 id="imagenes" className="scroll-mt-20 text-base font-medium text-black">
           Imágenes
         </h2>
         <ProductImages productId={product.id} images={product.images} />
@@ -126,7 +128,11 @@ export default async function EditProductPage(
         <h2 id="historial" className="text-base font-medium text-black">
           Historial de cambios
         </h2>
-        <ProductChangeLog entries={changes} market={market} />
+        <ProductChangeLog
+          entries={changes.entries}
+          hasMore={changes.hasMore}
+          market={market}
+        />
       </section>
 
       <section aria-labelledby="peligro" className="flex flex-col gap-3">

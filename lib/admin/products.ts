@@ -12,8 +12,16 @@
  * Sin I/O ni imports en runtime: ejecutable con `node --test` (DEC-025).
  */
 
+/**
+ * Tope de `supplier` y de `supplier_ref` (incremento 13). Es el MISMO que el
+ * CHECK de la migración 0039, y no es una regla de negocio: es un tope de
+ * cordura para que un pegado accidental no entre entero.
+ */
+export const SUPPLIER_TEXT_LIMIT = 120;
+
 export const PRODUCT_TEXT_LIMITS = {
   name: 120,
+  supplier: SUPPLIER_TEXT_LIMIT,
   shortDescription: 300,
   description: 5000,
   materials: 1000,
@@ -28,6 +36,8 @@ export interface ProductInput {
   name: string;
   slug: string;
   categoryId: string;
+  /** De dónde viene el artículo. Dato INTERNO: no se muestra al cliente. */
+  supplier: string | null;
   shortDescription: string | null;
   description: string | null;
   materials: string | null;
@@ -89,6 +99,7 @@ export function validateProductInput(
   }
 
   const fields: [keyof ProductInput, unknown, number, string][] = [
+    ["supplier", raw.supplier, PRODUCT_TEXT_LIMITS.supplier, "El proveedor"],
     ["shortDescription", raw.shortDescription, PRODUCT_TEXT_LIMITS.shortDescription, "La descripción corta"],
     ["description", raw.description, PRODUCT_TEXT_LIMITS.description, "La descripción"],
     ["materials", raw.materials, PRODUCT_TEXT_LIMITS.materials, "Los materiales"],
@@ -111,6 +122,7 @@ export function validateProductInput(
       name,
       slug: slug.value,
       categoryId: raw.categoryId,
+      supplier: optional.supplier,
       shortDescription: optional.shortDescription,
       description: optional.description,
       materials: optional.materials,
@@ -122,6 +134,20 @@ export function validateProductInput(
       isNew: raw.isNew === true,
     },
   };
+}
+
+/**
+ * Referencia externa de una VARIANTE (incremento 13).
+ *
+ * Se recorta y se guarda **tal cual**: `abc-123` no se convierte en `ABC123`.
+ * Normalizar la referencia de otro es inventarse su formato, y el día que el
+ * proveedor distinga mayúsculas el dato deja de servir para buscar. Vacío →
+ * `null`, que es lo que el CHECK de la 0039 exige (nada de cadenas en blanco).
+ */
+export function parseSupplierRef(
+  raw: unknown,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  return optionalText(raw, SUPPLIER_TEXT_LIMIT, "La referencia externa");
 }
 
 /**

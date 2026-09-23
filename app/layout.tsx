@@ -12,15 +12,24 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+/**
+ * Solo `metadataBase`, que es infraestructura: convierte en absolutas las URLs
+ * relativas de canonical y Open Graph.
+ *
+ * EL NOMBRE Y LA FRASE DE LA TIENDA YA NO ESTÁN AQUÍ (incremento 16). Estaban
+ * escritos a mano —«YI» y «Vive a tu propio ritmo.»— y eran la razón de que
+ * cambiar `store_name` en /admin/ajustes no se notara en ninguna pestaña del
+ * navegador. Ahora salen de `settings` en `app/(store)/layout.tsx`, que es el
+ * alcance donde la marca significa algo; el panel tiene su propia plantilla en
+ * `app/admin/(panel)/layout.tsx`.
+ *
+ * Poner la consulta en este layout la cobraría también a `/admin`, que es
+ * `force-dynamic`, no se indexa y no necesita marca.
+ */
 export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
   ),
-  title: {
-    default: "YI",
-    template: "%s · YI",
-  },
-  description: "Vive a tu propio ritmo.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

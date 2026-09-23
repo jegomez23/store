@@ -51,6 +51,26 @@ function readEnv(): Env | null {
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
 
+/**
+ * Un método de entrega ACTIVO del mercado, resuelto en tiempo real.
+ *
+ * `create_order` exige método desde el incremento 8. No se fija ningún uuid
+ * aquí: se lee el que haya, para que estos tests no dependan de qué métodos
+ * tenga sembrados la tienda.
+ */
+let cachedShippingMethodId: string | null = null;
+async function anyShippingMethodId(): Promise<string> {
+  if (cachedShippingMethodId) return cachedShippingMethodId;
+  const response = await fetch(
+    `${env!.url}/rest/v1/shipping_methods?select=id&market_id=eq.ES&is_active=eq.true&order=sort_order&limit=1`,
+    { headers: { apikey: env!.service, Authorization: `Bearer ${env!.service}` } },
+  );
+  const rows = (await response.json()) as { id: string }[];
+  if (!rows[0]) throw new Error("no hay ningún método de envío activo en ES");
+  cachedShippingMethodId = rows[0].id;
+  return cachedShippingMethodId;
+}
+
 /** Service role: SOLO para montar y limpiar fixtures y para LEER el log. */
 async function db(path: string, init: RequestInit = {}) {
   const response = await fetch(`${env!.url}/rest/v1/${path}`, {
@@ -217,6 +237,9 @@ async function cleanup() {
     await db(`products?id=eq.${p.id}`, { method: "DELETE" });
   }
   await db(`categories?slug=like.${PFX}*`, { method: "DELETE" });
+  // Mercado ficticio del test de aislamiento (0033), por si una ejecución
+  // anterior murió a medias: sin esto la siguiente fallaría al recrearlo.
+  await db(`markets?id=eq.ZZ`, { method: "DELETE" });
 }
 
 before(async () => {
@@ -432,6 +455,7 @@ describe("admin_change_log · no duplica order_events", { skip }, () => {
       p_customer_phone: "34600111222",
       p_customer_name: "ZZ 5C Cliente",
       p_client_request_id: crypto.randomUUID(),
+      p_shipping_method_id: await anyShippingMethodId(),
     });
     assert.ok(order.status < 300, JSON.stringify(order.body));
 
@@ -461,6 +485,7 @@ describe("admin_change_log · no duplica order_events", { skip }, () => {
       p_customer_phone: "34600111333",
       p_customer_name: "ZZ 5C Cliente",
       p_client_request_id: crypto.randomUUID(),
+      p_shipping_method_id: await anyShippingMethodId(),
     });
     const orderId = (order.body as { order_id: string }).order_id;
 
@@ -703,5 +728,178 @@ describe("admin_change_log · concurrencia", { skip }, () => {
     const rows = await logOf(id);
     assert.equal(rows.length, 1, "el segundo envío no cambia nada, así que no registra");
     assert.deepEqual([rows[0].old_value, rows[0].new_value], ["20.00", "25.00"]);
+  });
+});
+
+// ───────────────────────────────────── regresiones de la migración 0033
+//
+// Los tres agujeros de la 0032, reproducidos contra el proyecto real ANTES de
+// corregirlos. Si alguien deshace la 0033, estos tres fallan.
+
+describe("admin_change_log · la venta no es una decisión (0033)", { skip }, () => {
+  /** Borra el pedido y su rastro; los fixtures no dejan pedidos huérfanos. */
+  async function dropOrder(orderId: string) {
+    await db(`order_events?order_id=eq.${orderId}`, { method: "DELETE" });
+    await db(`order_items?order_id=eq.${orderId}`, { method: "DELETE" });
+    await db(`orders?id=eq.${orderId}`, { method: "DELETE" });
+    await db(`customers?name=like.ZZ 5C*`, { method: "DELETE" });
+  }
+
+  test("comprar CON la sesión de un admin tampoco genera auditoría", async () => {
+    // La 0032 solo excluía `admin_update_order_status`, y daba por hecho que la
+    // venta llega sin actor porque el checkout usa el cliente anónimo — una
+    // garantía de la aplicación, no de la base de datos. Medido entonces:
+    // field_name=stock, 10 → 8, source=rpc. La ficha lo pintaba como
+    // «Stock corregido: 10 → 8»: una venta disfrazada de decisión.
+    const { id, variantId } = await makeProduct(10);
+
+    const order = await rpc(adminA.token, "create_order", {
+      p_market_id: "ES",
+      p_items: [{ variant_id: variantId, quantity: 2 }],
+      p_customer_phone: "34600111444",
+      p_customer_name: "ZZ 5C Cliente",
+      p_client_request_id: crypto.randomUUID(),
+      p_shipping_method_id: await anyShippingMethodId(),
+    });
+    assert.ok(order.status < 300, JSON.stringify(order.body));
+
+    // CONTROL POSITIVO: el stock sí se movió, así que el trigger llegó a correr.
+    const { body: variant } = await db(`product_variants?id=eq.${variantId}&select=stock`);
+    assert.equal((variant as { stock: number }[])[0].stock, 8);
+
+    assert.deepEqual(await logOf(id), [], "una compra no es una decisión de catálogo");
+
+    await dropOrder((order.body as { order_id: string }).order_id);
+  });
+
+  test("la auditoría no puede DENEGAR una venta a un autenticado sin perfil", async () => {
+    // El fallo grave de la 0032: `actor_id` referencia `profiles` y la puerta
+    // era `auth.uid() is not null`. Un autenticado sin perfil hacía saltar
+    // 23503 dentro de `create_order`, la transacción se deshacía entera y el
+    // pedido NO se creaba. La auditoría podía impedir cobrar.
+    const { id, variantId } = await makeProduct(10);
+
+    const order = await rpc(plainUser.token, "create_order", {
+      p_market_id: "ES",
+      p_items: [{ variant_id: variantId, quantity: 2 }],
+      p_customer_phone: "34600111555",
+      p_customer_name: "ZZ 5C Cliente",
+      p_client_request_id: crypto.randomUUID(),
+      p_shipping_method_id: await anyShippingMethodId(),
+    });
+    assert.ok(
+      order.status < 300,
+      `la auditoría bloqueó la compra: ${JSON.stringify(order.body)}`,
+    );
+
+    const { body: variant } = await db(`product_variants?id=eq.${variantId}&select=stock`);
+    assert.equal((variant as { stock: number }[])[0].stock, 8, "el pedido se cobró de verdad");
+    assert.deepEqual(await logOf(id), []);
+
+    await dropOrder((order.body as { order_id: string }).order_id);
+  });
+});
+
+describe("admin_change_log · el historial hereda el mercado (0033)", { skip }, () => {
+  const MARKET = "ZZ";
+
+  test("un mercado inactivo esconde su historial, no solo su catálogo", async () => {
+    // La 0032 dejaba `using (is_admin())` a secas: era la ÚNICA tabla legible
+    // por el admin que ignoraba DEC-035. Medido entonces: con el mercado
+    // apagado, el producto devolvía `[]` y su historial seguía enseñando sku,
+    // precio anterior y precio nuevo.
+    await db("markets", {
+      method: "POST",
+      body: JSON.stringify({
+        id: MARKET,
+        name: "ZZ 5C mercado",
+        currency_code: "EUR",
+        locale: "es-ES",
+        is_active: true,
+      }),
+    });
+
+    try {
+      const { body: cat } = await db("categories", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          market_id: MARKET,
+          name: "ZZ 5C zz",
+          slug: `${PFX}-cat-zz`,
+          sort_order: 998,
+        }),
+      });
+      const { body: p } = await db("products", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          market_id: MARKET,
+          category_id: (cat as { id: string }[])[0].id,
+          name: "ZZ 5C mercado ajeno",
+          slug: `${PFX}-zz-${Math.random().toString(36).slice(2, 8)}`,
+          status: "draft",
+        }),
+      });
+      const productId = (p as { id: string }[])[0].id;
+      const { body: v } = await db("product_variants", {
+        method: "POST",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify({
+          product_id: productId,
+          sku: `${PFX}-ZZ-${Math.random().toString(36).slice(2, 7)}`.toUpperCase(),
+          price: 55,
+          stock: 10,
+          is_active: true,
+        }),
+      });
+      const variantId = (v as { id: string }[])[0].id;
+
+      // Con el mercado ACTIVO el admin escribe y lee: control positivo, para
+      // que el test no pueda pasar simplemente porque no se registró nada.
+      const patch = await as(adminA.token, `product_variants?id=eq.${variantId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ price: 99.9 }),
+      });
+      assert.ok(patch.status < 300, JSON.stringify(patch.body));
+
+      const visible = await as(
+        adminA.token,
+        `admin_change_log?product_id=eq.${productId}&select=id,old_value,new_value`,
+      );
+      assert.equal((visible.body as unknown[]).length, 1, "con el mercado activo se lee");
+
+      // Se apaga el mercado. El producto deja de existir para el admin…
+      await db(`markets?id=eq.${MARKET}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: false }),
+      });
+
+      const product = await as(adminA.token, `products?id=eq.${productId}&select=id`);
+      assert.deepEqual(product.body, [], "DEC-035: el catálogo apagado no se ve");
+
+      // …y su historial tampoco.
+      const hidden = await as(
+        adminA.token,
+        `admin_change_log?product_id=eq.${productId}&select=id,old_value,new_value,sku`,
+      );
+      assert.deepEqual(hidden.body, [], "el historial no puede sobrevivir a su catálogo");
+
+      // El registro SIGUE EXISTIENDO: se esconde, no se borra. Si el mercado
+      // se reactiva, la trazabilidad vuelve entera.
+      const { body: stored } = await db(
+        `admin_change_log?product_id=eq.${productId}&select=id`,
+      );
+      assert.equal((stored as unknown[]).length, 1, "esconder no es perder");
+    } finally {
+      const { body: ps } = await db(`products?market_id=eq.${MARKET}&select=id`);
+      for (const p of (ps ?? []) as { id: string }[]) {
+        await db(`admin_change_log?product_id=eq.${p.id}`, { method: "DELETE" });
+        await db(`product_variants?product_id=eq.${p.id}`, { method: "DELETE" });
+        await db(`products?id=eq.${p.id}`, { method: "DELETE" });
+      }
+      await db(`categories?market_id=eq.${MARKET}`, { method: "DELETE" });
+      await db(`markets?id=eq.${MARKET}`, { method: "DELETE" });
+    }
   });
 });

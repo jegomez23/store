@@ -1,8 +1,15 @@
-import { test, describe } from "node:test";
+import {
+  test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { slugify, parseSlug } from "../slug.ts";
-import { validateProductInput, catalogErrorMessage, isUuid } from "../products.ts";
+import {
+  validateProductInput,
+  catalogErrorMessage,
+  isUuid,
+  parseSupplierRef,
+  SUPPLIER_TEXT_LIMIT,
+} from "../products.ts";
 import {
   buildMissingCombinations,
   combinationKey,
@@ -19,6 +26,7 @@ import {
 } from "../images.ts";
 import {
   HOME_SECTIONS,
+  SETTINGS_LIMITS,
   canBeParent,
   canReceiveParent,
   isHomeSection,
@@ -114,6 +122,65 @@ describe("validateProductInput", () => {
     assert.equal(isUuid(UUID_A), true);
     assert.equal(isUuid("1234"), false);
     assert.equal(isUuid(null), false);
+  });
+});
+
+describe("proveedor y referencia externa (incremento 13)", () => {
+  const base = { name: "Camiseta", slug: "camiseta", categoryId: UUID_A };
+
+  test("el proveedor se recorta y el vacío va a null", () => {
+    const r = validateProductInput({ ...base, supplier: "  Proveedor A  " }, parseSlug);
+    assert.equal(r.ok, true);
+    assert.equal(r.ok && r.input.supplier, "Proveedor A");
+
+    const vacio = validateProductInput({ ...base, supplier: "   " }, parseSlug);
+    assert.equal(vacio.ok, true);
+    assert.equal(vacio.ok && vacio.input.supplier, null, "'   ' es ausencia, no dato");
+  });
+
+  test("un producto sin proveedor sigue siendo válido", () => {
+    const r = validateProductInput(base, parseSlug);
+    assert.equal(r.ok, true);
+    assert.equal(r.ok && r.input.supplier, null);
+  });
+
+  test("el proveedor tiene tope", () => {
+    const r = validateProductInput({ ...base, supplier: "x".repeat(121) }, parseSlug);
+    assert.equal(r.ok, false);
+  });
+
+  test("la referencia se guarda TAL CUAL: no se normaliza la caja ni los guiones", () => {
+    const r = parseSupplierRef("  abc-123-blk/m  ");
+    assert.equal(r.ok, true);
+    assert.equal(
+      r.ok && r.value,
+      "abc-123-blk/m",
+      "normalizar la referencia de otro es inventarse su formato",
+    );
+  });
+
+  test("la referencia vacía es null, y respeta el tope", () => {
+    for (const raw of ["", "   ", undefined]) {
+      const parsed = parseSupplierRef(raw);
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.ok && parsed.value, null);
+    }
+    assert.equal(parseSupplierRef("x".repeat(SUPPLIER_TEXT_LIMIT)).ok, true);
+    assert.equal(parseSupplierRef("x".repeat(SUPPLIER_TEXT_LIMIT + 1)).ok, false);
+  });
+
+  test("el tope de la aplicación coincide con el CHECK de la migración 0039", () => {
+    const sql = fs.readFileSync("supabase/migrations/0039_supplier_and_reference.sql", "utf8");
+    assert.match(sql, new RegExp(`length\\(supplier\\) <= ${SUPPLIER_TEXT_LIMIT}`));
+    assert.match(sql, new RegExp(`length\\(supplier_ref\\) <= ${SUPPLIER_TEXT_LIMIT}`));
+  });
+
+  test("la migración NO declara unicidad: dos productos pueden ser el mismo artículo", () => {
+    const sql = fs.readFileSync("supabase/migrations/0039_supplier_and_reference.sql", "utf8");
+    assert.ok(
+      !/create\s+unique\s+index/i.test(sql) && !/unique\s*\(/i.test(sql),
+      "un UNIQUE aquí inventaría una regla que el negocio no garantiza",
+    );
   });
 });
 
@@ -378,6 +445,38 @@ describe("ajustes", () => {
   test("el nombre de tienda es obligatorio", () => {
     assert.equal(validateSettingsInput({ storeName: "" }).ok, false);
     assert.equal(validateSettingsInput({}).ok, false);
+  });
+
+  /* ────────────── La frase de la tienda (incremento 16) ────────────── */
+
+  test("la frase vacía es NULL, no una cadena vacía", () => {
+    // Vacío significa «la tienda no publica descripción». Guardarlo como ""
+    // dejaría un <meta description=""> y un párrafo vacío en el footer.
+    for (const value of [undefined, "", "   ", "\n\t "]) {
+      const r = validateSettingsInput({ storeName: "YI", tagline: value });
+      assert.equal(r.ok, true);
+      if (r.ok) assert.equal(r.input.tagline, null, `${JSON.stringify(value)} debería ser null`);
+    }
+  });
+
+  test("la frase se recorta y colapsa espacios", () => {
+    const r = validateSettingsInput({ storeName: "YI", tagline: "  Vive   a tu   ritmo.  " });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.input.tagline, "Vive a tu ritmo.");
+  });
+
+  test("la frase tiene el MISMO límite que el CHECK de la 0042", () => {
+    const limit = SETTINGS_LIMITS.tagline;
+    assert.equal(limit, 160, "si cambia aquí, cambia en la migración 0042");
+    assert.equal(validateSettingsInput({ storeName: "YI", tagline: "x".repeat(limit) }).ok, true);
+    assert.equal(validateSettingsInput({ storeName: "YI", tagline: "x".repeat(limit + 1) }).ok, false);
+  });
+
+  test("el nombre tiene el MISMO límite que el CHECK de la 0042", () => {
+    const limit = SETTINGS_LIMITS.storeName;
+    assert.equal(limit, 80, "si cambia aquí, cambia en la migración 0042");
+    assert.equal(validateSettingsInput({ storeName: "x".repeat(limit) }).ok, true);
+    assert.equal(validateSettingsInput({ storeName: "x".repeat(limit + 1) }).ok, false);
   });
 
   test("los ajustes NO incluyen el número de WhatsApp: tiene su propia acción", () => {

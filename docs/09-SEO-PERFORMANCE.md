@@ -7,7 +7,7 @@
 > | Punto | Estado |
 > |---|---|
 > | §1 URLs | 🟡 Existen `/` y `/producto/[slug]`. **`/categoria/[slug]` e `/info/[slug]` NO existen** (DEC-039) |
-> | §1 Metadata global | ✅ `metadataBase`, template `%s · YI`, description |
+> | §1 Metadata global | ✅ `metadataBase` en el layout raíz · **desde el incremento 16 el título, su plantilla `%s · nombre` y la `description` salen de `settings`** (`store_name` y `tagline`) y se resuelven en el layout de `(store)`, no en el raíz (DEC-071) |
 > | §1 Metadata por página | ✅ Producto: `meta_title`/`meta_description` con fallback, canonical, OG con foto real, Twitter. Home: canonical + OG |
 > | §1 Open Graph | ✅ OG por producto con imagen del catálogo · ✅ `app/opengraph-image.tsx` para la home (`next/og`, sin dependencias nuevas) · ⬜ OG dinámica por producto: **diferida a propósito**, como dice esta misma sección |
 > | §1 Sitemap | ✅ `app/sitemap.ts`: home + fichas publicadas. Sin categorías ni infos porque esas rutas no existen (DEC-039). Invalidado en cada mutación de producto (DEC-041) |
@@ -36,7 +36,7 @@ Sin prefijos de idioma/mercado: cada deploy ES su mercado con su dominio (`07-MU
 
 ### Metadata (Metadata API de Next.js)
 
-- `app/layout.tsx`: `metadataBase` desde `NEXT_PUBLIC_SITE_URL`, template de título `%s · YI`, Open Graph base.
+- `app/layout.tsx`: **solo** `metadataBase` desde `NEXT_PUBLIC_SITE_URL`. El título, su plantilla y la descripción los pone `generateMetadata` de `app/(store)/layout.tsx` desde `settings` (incremento 16): el layout raíz envuelve también `/admin`, que es `force-dynamic` y no se indexa, y no debe pagar una consulta por render. **Coste cero**: `getStorefrontSettings` es `cache()` y el layout ya la llamaba para el footer, así que `/` sigue siendo `○ (Static)` con ISR de 5 min.
 - Por página: `generateMetadata()` server-side leyendo BD:
   - Producto: `meta_title || name` + `meta_description || short_description`; OG image = imagen principal; canonical propio.
   - Categoría: nombre + descripción; paginación vía `searchParams` async.
@@ -44,12 +44,15 @@ Sin prefijos de idioma/mercado: cada deploy ES su mercado con su dominio (`07-MU
 
 ### Open Graph / redes
 - OG por producto/categoría con imagen real del catálogo (1200×630 recortada por next/image si hace falta).
-- Archivos estáticos `opengraph-image` para home (Fase 8). Generación dinámica por producto: diferida hasta justificarla.
+- `app/opengraph-image.tsx` para la home. **Desde el incremento 16 NO es un archivo horneado en el build**: lee `store_name` y `tagline` y es ISR de 5 min, la misma cadencia que la home, dentro del alcance de `revalidateStorefront()`. Es la imagen que se ve al pegar el enlace en WhatsApp o en un anuncio; dejarla estática la habría congelado con la marca vieja. `alt` sigue siendo constante a propósito: `generateImageMetadata` es para varias imágenes por ruta y añade un `?id=` a la URL. Generación dinámica por producto: diferida hasta justificarla.
+- **Desde el incremento 17 la tarjeta lleva el LOGO** si la tienda tiene uno, y el nombre solo cuando no lo hay (a tamaño de miniatura, decir la marca dos veces gasta el sitio de la frase). ⚠️ **El logo se convierte a PNG antes de pasarlo a `ImageResponse`: `next/og` NO sabe decodificar WebP** — con un data URI WebP la ruta devolvía **500** (`TypeError: u2 is not iterable`, verificado en el código compilado de Satori). Cualquier fallo al cargarlo cae al diseño tipográfico anterior (DEC-077).
 
 ### Sitemap y robots
 - `app/sitemap.ts`: home + productos activos. **Categorías e infos NO** — esas rutas no existen en `app/` y listarlas sería anunciar 404 (DEC-039). No se regenera por tag (no hay tags): se invalida con `revalidatePath('/sitemap.xml')` en cada mutación de producto (DEC-041).
 - `app/robots.ts`: permite todo público; **deniega `/admin`, `/api`**.
 - JSON-LD: `Product` (name, image, offers con precio/moneda/disponibilidad) y `BreadcrumbList` en ficha — inyectado en Server Component.
+
+> ⚠️ **UN PRODUCTO SIN FOTO NO ANUNCIA `og:image` NI `image`** (incremento 10, DEC-066). Hasta ese incremento las cuatro fichas del seed sí las anunciaban, pero apuntando a un objeto inexistente: `og:image` y el `image` del JSON-LD devolvían **400**, así que al compartir el enlace no salía nada y el rich result era inválido igual. Ahora, sin foto, sencillamente no se emiten: no se inventa una imagen de marca para rellenar. **`image` es propiedad REQUERIDA del rich result de producto de Google, así que ese rich result seguirá incompleto hasta que se suban fotos reales.** Verificado sobre el build servido: en cuanto existe una foto de verdad, la ficha vuelve a anunciar `og:image` con respuesta **200**, el optimizador devuelve la imagen y el JSON-LD recupera `image`.
 
 ### Buenas prácticas continuas
 - Slugs estables: cambiar slug genera redirect 301 (mapa en admin futuro; v1: evitar cambios).

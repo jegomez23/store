@@ -86,8 +86,8 @@ Tipos soportados: porcentaje, importe fijo, precio especial, código (ver limita
 - Estados gestionados por el admin: pendiente → contactado → confirmado → pagado → preparando → enviado → entregado (+ cancelado).
 
 ### Envío
-- Métodos configurables por mercado (nombre, precio, umbral gratis).
-- En v1 el coste final se confirma en la conversación de WhatsApp.
+- Métodos configurables por mercado (nombre, precio, umbral gratis). **Desde el incremento 9 se administran desde `/admin/ajustes`, sin SQL** (DEC-064): crear, editar el precio o el umbral, retirar del checkout y borrar. Retirar es la operación normal; borrar no altera los pedidos ya hechos, que conservan el método y el importe cobrado.
+- **Desde el incremento 8 el coste se calcula y se registra en el checkout** (DEC-063): el cliente elige método antes de confirmar y ve PRODUCTOS + ENVÍO = TOTAL. Ya NO se acuerda por WhatsApp. El umbral de envío gratis SÍ se aplica: gratis cuando el subtotal alcanza el umbral del método.
 
 ---
 

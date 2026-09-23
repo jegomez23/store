@@ -205,10 +205,20 @@ export function validateHomeBlockInput(raw: Record<string, unknown>): HomeValida
 
 // ──────────────────────────────────────────────────────────────── Ajustes
 
-export const SETTINGS_LIMITS = { storeName: 80, email: 254, url: 300 } as const;
+/**
+ * Los mismos números que los CHECK de la migración 0042. Si cambia uno, cambia
+ * el otro: aquí se da el mensaje entendible, allí está la barrera de verdad.
+ */
+export const SETTINGS_LIMITS = { storeName: 80, tagline: 160, email: 254, url: 300 } as const;
 
 export interface SettingsInput {
   storeName: string;
+  /**
+   * Frase de la tienda (incremento 16). Vacío = `null` = la tienda NO publica
+   * descripción, y entonces no se pinta ninguna. Nunca se sustituye por un
+   * texto por defecto escrito en el código (regla #9 de CLAUDE.md).
+   */
+  tagline: string | null;
   contactEmail: string | null;
   instagramUrl: string | null;
   tiktokUrl: string | null;
@@ -245,6 +255,18 @@ export function validateSettingsInput(raw: Record<string, unknown>): SettingsVal
     return { ok: false, error: `El nombre no puede superar ${SETTINGS_LIMITS.storeName} caracteres.` };
   }
 
+  // Se colapsan los espacios como en el resto de campos de texto del panel:
+  // "YI   Store" y "YI Store" son la misma frase escrita en un móvil.
+  const taglineRaw =
+    typeof raw.tagline === "string" ? raw.tagline.trim().replace(/\s+/g, " ") : "";
+  if (taglineRaw.length > SETTINGS_LIMITS.tagline) {
+    return {
+      ok: false,
+      error: `La frase no puede superar ${SETTINGS_LIMITS.tagline} caracteres.`,
+    };
+  }
+  const tagline = taglineRaw === "" ? null : taglineRaw;
+
   let contactEmail: string | null = null;
   if (typeof raw.contactEmail === "string" && raw.contactEmail.trim().length > 0) {
     const email = raw.contactEmail.trim();
@@ -265,6 +287,7 @@ export function validateSettingsInput(raw: Record<string, unknown>): SettingsVal
     ok: true,
     input: {
       storeName,
+      tagline,
       contactEmail,
       instagramUrl: instagram.value,
       tiktokUrl: tiktok.value,

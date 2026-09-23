@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
+import Link from "next/link";
 import { Button } from "@/components/ui/Button";
 import { loginAction, type LoginState } from "@/app/admin/(auth)/login/actions";
 
@@ -80,6 +81,19 @@ export function LoginForm({ next }: { next: string }) {
       ) : null}
 
       <SubmitButton />
+
+      {/*
+        LA SALIDA (incremento 18). Va DEBAJO del botón y no escondida en un
+        menú: quien la busca es porque no puede entrar, y es el único camino de
+        vuelta que tiene. 44 px de objetivo táctil, que se pulsa desde el móvil.
+      */}
+      <Link
+        href="/admin/recuperar"
+        className="inline-flex min-h-11 items-center justify-center text-sm text-gray-700 underline underline-offset-4"
+      >
+        {/* TODO(i18n) */}
+        ¿Has olvidado tu contraseña?
+      </Link>
     </form>
   );
 }

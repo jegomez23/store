@@ -49,12 +49,25 @@ export function buildOrderMessage(
   }
 
   const totals: string[] = [];
-  // Fase 6 no aplica promociones ni envío (ver create_order §9): estas líneas
-  // solo aparecerán cuando esos importes existan de verdad, no como "0 €".
+  // Las promociones siguen sin aplicarse: esa línea solo aparecerá cuando el
+  // importe exista de verdad, no como "0 €".
   if (order.discountTotal > 0) {
     totals.push(`Descuento: -${money(order.discountTotal)}`);
   }
-  if (order.shippingTotal > 0) {
+  /*
+    ENVÍO (incremento 8). Se imprime SIEMPRE que haya método, incluso cuando
+    cuesta 0: "Envío: 0,00 €" no es ruido, es la confirmación de que el envío
+    ya está contado y de que nadie va a reclamarlo después por el chat. Callarlo
+    cuando es gratis deja al cliente sin saber si está incluido o pendiente.
+
+    Los importes son los del pedido REAL devuelto por `create_order`. Aquí no se
+    recalcula nada: si esta función sumara por su cuenta, podría contradecir a
+    la BD y el cliente recibiría un total que no es el registrado.
+  */
+  if (order.shippingMethodName !== null) {
+    totals.push(`Envío (${order.shippingMethodName}): ${money(order.shippingTotal)}`);
+  } else if (order.shippingTotal > 0) {
+    // Pedido anterior al incremento 8: hay importe pero no consta el método.
     totals.push(`Envío: ${money(order.shippingTotal)}`);
   }
   totals.push(`Total: ${money(order.total)}`);

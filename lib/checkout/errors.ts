@@ -29,6 +29,10 @@ export const CHECKOUT_ERROR_CODES = [
   "WRONG_MARKET",
   /** No hay stock suficiente en el momento de comprar. */
   "OUT_OF_STOCK",
+  /** No se eligió método de entrega (incremento 8). */
+  "SHIPPING_METHOD_REQUIRED",
+  /** El método no existe, está retirado o es de otro mercado (incremento 8). */
+  "INVALID_SHIPPING_METHOD",
   /** Misma clave de idempotencia con un payload distinto. */
   "IDEMPOTENCY_KEY_REUSED",
   /** El mercado no tiene número de WhatsApp configurado. */
@@ -60,6 +64,9 @@ const MESSAGES: Record<CheckoutErrorCode, string> = {
   PRODUCT_UNAVAILABLE: "Uno de los productos de tu carrito ya no está a la venta.",
   WRONG_MARKET: "Uno de los productos de tu carrito no está disponible en esta tienda.",
   OUT_OF_STOCK: "Se ha agotado alguno de los productos. Ajusta las cantidades y vuelve a intentarlo.",
+  SHIPPING_METHOD_REQUIRED: "Elige cómo quieres recibir el pedido.",
+  INVALID_SHIPPING_METHOD:
+    "Esa forma de entrega ya no está disponible. Vuelve a elegir una.",
   IDEMPOTENCY_KEY_REUSED: "Este pedido ya se había enviado. Vuelve al carrito y empieza de nuevo.",
   CHECKOUT_NOT_CONFIGURED: "La compra por WhatsApp no está disponible ahora mismo.",
   ORDER_CREATION_FAILED: "No hemos podido registrar tu pedido. Inténtalo de nuevo en unos segundos.",

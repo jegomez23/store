@@ -1,3 +1,4 @@
+import { sanitizeAttribution } from "../attribution/attribution.ts";
 import type { CheckoutErrorCode } from "./errors.ts";
 import type { CheckoutInput, CheckoutLineRef } from "./types.ts";
 
@@ -75,6 +76,16 @@ export function validateCheckoutInput(value: unknown): ValidationResult {
     return { ok: false, error: "INVALID_INPUT" };
   }
 
+  /*
+    Método de entrega (incremento 8). Aquí solo se comprueba la FORMA: que sea
+    un uuid. Que exista, esté activo y sea del mercado del pedido lo decide
+    `create_order`, que es quien puede saberlo; repetirlo aquí obligaría a ir a
+    la BD desde una función pura y daría una segunda verdad que puede divergir.
+  */
+  if (!isUuid(raw.shippingMethodId)) {
+    return { ok: false, error: "SHIPPING_METHOD_REQUIRED" };
+  }
+
   if (!Array.isArray(raw.items)) {
     return { ok: false, error: "INVALID_INPUT" };
   }
@@ -119,6 +130,10 @@ export function validateCheckoutInput(value: unknown): ValidationResult {
     return { ok: false, error: "INVALID_CUSTOMER_NAME" };
   }
 
+  // El navegador puede mandar cualquier cosa: se filtra por la lista blanca
+  // ANTES de que viaje a PostgreSQL, que volverá a filtrarla igualmente.
+  const attribution = sanitizeAttribution(raw.attribution);
+
   const sourceUrl =
     typeof raw.sourceUrl === "string" && raw.sourceUrl.length > 0
       ? raw.sourceUrl.slice(0, 500)
@@ -133,7 +148,9 @@ export function validateCheckoutInput(value: unknown): ValidationResult {
         phone: customer.phone.trim(),
       },
       clientRequestId: raw.clientRequestId.toLowerCase(),
+      shippingMethodId: raw.shippingMethodId.toLowerCase(),
       sourceUrl,
+      attribution,
     },
   };
 }

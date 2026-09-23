@@ -31,7 +31,7 @@ export function OrdersFilters({ params }: { params: OrderListParams }) {
         ) : null}
         <label htmlFor="q" className="sr-only">
           {/* TODO(i18n) */}
-          Buscar por número de pedido
+          Buscar por número de pedido, teléfono o nombre del cliente
         </label>
         <input
           id="q"
@@ -39,7 +39,9 @@ export function OrdersFilters({ params }: { params: OrderListParams }) {
           type="search"
           inputMode="search"
           defaultValue={params.query ?? ""}
-          placeholder="YI-ES-000001"
+          // El teléfono va primero a propósito: es lo único que el cliente
+          // trae consigo cuando escribe por WhatsApp.
+          placeholder="Teléfono, nombre o YI-ES-000001"
           className="h-11 w-full max-w-xs rounded-md border border-line bg-white px-3 text-base text-black outline-none focus-visible:border-black md:text-sm"
         />
         <button
@@ -50,6 +52,13 @@ export function OrdersFilters({ params }: { params: OrderListParams }) {
           Buscar
         </button>
       </form>
+
+      <p className="text-xs text-gray-400">
+        {/* TODO(i18n) */}
+        Se busca a la vez por número de pedido, teléfono y nombre. El teléfono
+        se puede pegar con «+» y espacios. Los acentos cuentan: «Perez» no
+        encuentra «Pérez».
+      </p>
 
       <nav aria-label="Filtrar por estado">
         <ul className="flex flex-wrap gap-1.5">

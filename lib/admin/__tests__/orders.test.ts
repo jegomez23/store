@@ -13,6 +13,8 @@ import {
   isTerminal,
   nextStatusesFor,
   normalizeOrderQuery,
+  orderSearchTokens,
+  sanitizeOrderSearch,
   ordersHref,
   parseOrderListParams,
   quickNextStatus,
@@ -144,7 +146,7 @@ describe("parseOrderListParams", () => {
   test("lee filtros válidos", () => {
     assert.deepEqual(
       parseOrderListParams({ estado: "shipped", q: "YI-ES-000012", pagina: "3" }),
-      { status: "shipped", query: "YI-ES-000012", page: 3 },
+      { status: "shipped", query: "YI-ES-000012", unusableQuery: false, page: 3 },
     );
   });
 
@@ -152,6 +154,7 @@ describe("parseOrderListParams", () => {
     assert.deepEqual(parseOrderListParams({}), {
       status: null,
       query: null,
+      unusableQuery: false,
       page: 1,
     });
   });
@@ -296,5 +299,135 @@ describe("quickNextStatus — qué cabe en un solo clic", () => {
         assert.ok(canTransition(status, next), `${status} → ${next} no es legal`);
       }
     }
+  });
+});
+
+// ─────────────────────────────────── Buscador del listado (P3)
+
+describe("sanitizeOrderSearch", () => {
+  test("conserva un nombre con tildes, ñ y espacios", () => {
+    // Lo que hacía la normalización anterior con esto era dejar "ANAPREZ".
+    assert.equal(sanitizeOrderSearch("Ana Pérez"), "Ana Pérez");
+    assert.equal(sanitizeOrderSearch("Bruno Núñez"), "Bruno Núñez");
+    assert.equal(sanitizeOrderSearch("O'Connor"), "O'Connor");
+  });
+
+  test("conserva el número de pedido tal cual", () => {
+    assert.equal(sanitizeOrderSearch("YI-ES-000001"), "YI-ES-000001");
+  });
+
+  test("conserva los dígitos de un teléfono pegado del chat", () => {
+    assert.equal(sanitizeOrderSearch("+34 600 111 222"), "34 600 111 222");
+  });
+
+  test("elimina los comodines de LIKE y de PostgREST", () => {
+    for (const wildcard of ["%", "_", "*"]) {
+      assert.equal(
+        sanitizeOrderSearch(`Ana${wildcard}`),
+        "Ana",
+        `no debe sobrevivir ${wildcard}`,
+      );
+    }
+  });
+
+  test("elimina lo que rompería el `or=(…)` de PostgREST", () => {
+    // `,` `(` `)` y `.` son estructura de la consulta: si pasaran, el texto del
+    // usuario dejaría de ser un valor.
+    assert.equal(sanitizeOrderSearch("a,b"), "a b");
+    assert.equal(sanitizeOrderSearch("a(b)c"), "a b c");
+    assert.equal(sanitizeOrderSearch("name.ilike"), "name ilike");
+    // `String.raw` para que el backslash llegue de verdad al test.
+    assert.equal(sanitizeOrderSearch(String.raw`a"b\c`), "a b c");
+  });
+
+  test("colapsa espacios y recorta", () => {
+    assert.equal(sanitizeOrderSearch("  Ana    Pérez  "), "Ana Pérez");
+  });
+
+  test("vacío, solo espacios y solo símbolos dan null", () => {
+    assert.equal(sanitizeOrderSearch(""), null);
+    assert.equal(sanitizeOrderSearch("   "), null);
+    assert.equal(sanitizeOrderSearch("%%%"), null);
+    assert.equal(sanitizeOrderSearch(undefined), null);
+    assert.equal(sanitizeOrderSearch(null), null);
+  });
+
+  test("acota la longitud", () => {
+    assert.equal(sanitizeOrderSearch("a".repeat(200))?.length, 40);
+  });
+});
+
+describe("orderSearchTokens", () => {
+  test("de un número de pedido salen los tres tokens", () => {
+    const t = orderSearchTokens("YI-ES-000001");
+    assert.equal(t.orderNumber, "YI-ES-000001");
+    assert.equal(t.digits, "000001");
+    assert.equal(t.name, "YI-ES-000001");
+  });
+
+  test("de un teléfono con formato salen SOLO sus dígitos para `phone`", () => {
+    // `customers.phone` se guarda sin '+' ni espacios (create_order), así que
+    // sin esto pegar el número del chat no encontraría nada.
+    const t = orderSearchTokens("34 600 111 222");
+    assert.equal(t.digits, "34600111222");
+  });
+
+  test("de un nombre sin dígitos, `digits` es null", () => {
+    // Si no, la cláusula quedaría `phone.ilike.**` y casaría con TODOS.
+    const t = orderSearchTokens("Ana Pérez");
+    assert.equal(t.digits, null);
+    assert.equal(t.name, "Ana Pérez");
+  });
+
+  test("un nombre sin letras aptas para número deja `orderNumber` null", () => {
+    assert.equal(orderSearchTokens("   ")?.orderNumber, null);
+  });
+
+  test("null entra, null sale en los tres", () => {
+    assert.deepEqual(orderSearchTokens(null), {
+      orderNumber: null,
+      digits: null,
+      name: null,
+    });
+  });
+
+  test("el token de número se pasa a mayúsculas, el de nombre NO", () => {
+    const t = orderSearchTokens("yi-es-1 Ana");
+    assert.equal(t.orderNumber, "YI-ES-1ANA");
+    assert.equal(t.name, "yi-es-1 Ana");
+  });
+});
+
+describe("parseOrderListParams · búsqueda", () => {
+  test("el parámetro `q` ya no destruye un nombre", () => {
+    const params = parseOrderListParams({ q: "Ana Pérez" });
+    assert.equal(params.query, "Ana Pérez");
+  });
+
+  test("sigue aceptando un número de pedido", () => {
+    assert.equal(parseOrderListParams({ q: " YI-ES-000001 " }).query, "YI-ES-000001");
+  });
+});
+
+describe("parseOrderListParams · búsqueda inservible", () => {
+  test("escribir solo comodines NO equivale a no buscar", () => {
+    // Antes de P3 esto devolvía `query: null` y la pantalla listaba TODOS los
+    // pedidos, que se lee como "tu búsqueda ha encontrado todo". Medido sobre
+    // el build servido: `%` devolvía los tres pedidos de prueba.
+    for (const evil of ["%", "***", "%%%", "((("]) {
+      const params = parseOrderListParams({ q: evil });
+      assert.equal(params.query, null, evil);
+      assert.equal(params.unusableQuery, true, `${evil} debe marcarse inservible`);
+    }
+  });
+
+  test("no buscar nada NO es una búsqueda inservible", () => {
+    assert.equal(parseOrderListParams({}).unusableQuery, false);
+    assert.equal(parseOrderListParams({ q: "" }).unusableQuery, false);
+    assert.equal(parseOrderListParams({ q: "   " }).unusableQuery, false);
+  });
+
+  test("una búsqueda válida tampoco", () => {
+    assert.equal(parseOrderListParams({ q: "Ana" }).unusableQuery, false);
   });
 });

@@ -5,7 +5,10 @@ import { AdminSkeleton } from "@/components/admin/AdminSkeleton";
 import { PRODUCT_STATUSES, PRODUCT_STATUS_LABELS, isProductStatus, isLowStock } from "@/lib/admin/catalog";
 import {
   CATALOG_PAGE_SIZE,
+  countProductsWithoutImage,
+  listBrokenProductImages,
   listProductsForAdmin,
+  listProductsWithoutImage,
   listUnsellableProducts,
   normalizeCatalogQuery,
 } from "@/lib/data/admin/catalog";
@@ -50,7 +53,17 @@ export default async function AdminCatalogPage(
   const status = isProductStatus(rawStatus) ? rawStatus : null;
   const query = normalizeCatalogQuery(first(searchParams.q));
   const page = parsePage(first(searchParams.pagina));
-  const unsellableOnly = first(searchParams.ver) === "no-vendibles";
+  /*
+    `?ver=` es la convención que 5B ya estableció para "vistas" del catálogo que
+    no son un filtro de estado. Se reutiliza tal cual en vez de inventar un
+    segundo mecanismo: cada valor abre una lista con su propio predicado.
+  */
+  const view = first(searchParams.ver);
+  const unsellableOnly = view === "no-vendibles";
+  const withoutImageOnly = view === "sin-foto";
+  // Incremento 10: tercera vista. La fila de imagen existe pero el objeto no,
+  // así que "sin foto" da el producto por fotografiado y el cliente ve un hueco.
+  const brokenImageOnly = view === "foto-rota";
 
   return (
     <div className="flex flex-col gap-6">
@@ -68,8 +81,8 @@ export default async function AdminCatalogPage(
           href="/admin/catalogo/nuevo"
           className="inline-flex h-12 items-center rounded-full bg-red px-5 text-sm font-medium text-white transition-colors duration-200 ease-out hover:bg-red-dark md:h-11"
         >
-          {/* TODO(i18n) */}
-          Nuevo producto
+          {/* TODO(i18n) — mismo texto que la acción del inicio: es el mismo sitio. */}
+          + Añadir producto
         </Link>
       </header>
 
@@ -101,7 +114,7 @@ export default async function AdminCatalogPage(
           <ul className="flex flex-wrap gap-1.5">
             {[{ value: null, label: "Todos" }, ...PRODUCT_STATUSES.map((s) => ({ value: s, label: PRODUCT_STATUS_LABELS[s] }))].map(
               (chip) => {
-                const active = status === chip.value && !unsellableOnly;
+                const active = status === chip.value && !unsellableOnly && !withoutImageOnly;
                 return (
                   <li key={chip.label}>
                     <Link
@@ -137,17 +150,61 @@ export default async function AdminCatalogPage(
                 No se pueden comprar
               </Link>
             </li>
+            {/*
+              Segundo destino, y NEUTRO a propósito: un producto sin foto se
+              compra perfectamente. No lleva rojo porque no es lo mismo que "no
+              se puede comprar", y mezclarlos haría que el rojo dejara de
+              significar algo concreto.
+            */}
+            <li>
+              <Link
+                href="/admin/catalogo?ver=sin-foto"
+                aria-current={withoutImageOnly ? "true" : undefined}
+                className={`flex h-9 items-center rounded-full px-3 text-xs font-medium transition-colors duration-200 ease-out ${
+                  withoutImageOnly
+                    ? "bg-black text-white"
+                    : "border border-line bg-white text-gray-700 hover:border-black hover:text-black"
+                }`}
+              >
+                {/* TODO(i18n) */}
+                Sin foto
+              </Link>
+            </li>
+            {/*
+              Tercer destino. También neutro: el producto se compra igual. Se
+              separa de "Sin foto" porque el arreglo es distinto —ahí falta
+              subir una foto; aquí hay una fila que apunta a un objeto que no
+              está— y porque juntarlos volvería a esconder el segundo caso.
+            */}
+            <li>
+              <Link
+                href="/admin/catalogo?ver=foto-rota"
+                aria-current={brokenImageOnly ? "true" : undefined}
+                className={`flex h-9 items-center rounded-full px-3 text-xs font-medium transition-colors duration-200 ease-out ${
+                  brokenImageOnly
+                    ? "bg-black text-white"
+                    : "border border-line bg-white text-gray-700 hover:border-black hover:text-black"
+                }`}
+              >
+                {/* TODO(i18n) */}
+                Foto rota
+              </Link>
+            </li>
           </ul>
         </nav>
       </div>
 
       {/* Skeleton por <Suspense>, no por loading.tsx (ver AdminSkeleton). */}
       <Suspense
-        key={`${unsellableOnly}-${status}-${query}-${page}`}
+        key={`${view}-${status}-${query}-${page}`}
         fallback={<AdminSkeleton rows={4} />}
       >
         {unsellableOnly ? (
           <UnsellableList />
+        ) : withoutImageOnly ? (
+          <WithoutImageList />
+        ) : brokenImageOnly ? (
+          <BrokenImageList />
         ) : (
           <CatalogList status={status} query={query} page={page} />
         )}
@@ -370,5 +427,147 @@ async function UnsellableList() {
         </section>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Publicados sin foto (incremento P2).
+ *
+ * Es el destino del aviso del resumen, y usa EXACTAMENTE el mismo constructor
+ * de consulta que lo contó (`withoutImageQuery`), así que el número y la lista
+ * no pueden discrepar — la lección de 5B, aplicada aquí sin función SQL porque
+ * PostgREST sí sabe expresar este `NOT EXISTS`.
+ *
+ * NO es un problema de compra: estos productos se venden. Por eso el vacío se
+ * redacta en positivo y la lista no lleva ni rojo ni lenguaje de urgencia.
+ */
+async function WithoutImageList() {
+  const market = await getActiveMarket();
+  const [products, total] = await Promise.all([
+    listProductsWithoutImage(market),
+    countProductsWithoutImage(market),
+  ]);
+
+  if (products.length === 0) {
+    return (
+      <p className="rounded-md border border-line bg-cream px-4 py-8 text-center text-sm text-gray-700">
+        {/* TODO(i18n) */}
+        Todos los productos publicados tienen al menos una foto.
+      </p>
+    );
+  }
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-medium text-black">
+        {/* TODO(i18n) */}
+        Publicados sin ninguna foto ({total})
+      </h2>
+      <p className="text-xs text-gray-400">
+        {/* TODO(i18n) */}
+        Se venden y su ficha funciona, pero el cliente ve un recuadro gris en
+        lugar del producto. Cada enlace lleva directo a subir la foto.
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {products.map((product) => (
+          <li key={product.id}>
+            {/*
+              PRODUCTO → SIN FOTO → SUBIR FOTO, en un toque (incremento 19).
+              Antes el enlace dejaba al administrador arriba del formulario de
+              edición, con las imágenes a varias pantallas de scroll en un
+              móvil. El ancla "imagenes" ya existía en la ficha desde el CMS.
+            */}
+            <Link
+              href={`/admin/catalogo/${product.id}#imagenes`}
+              className="flex items-center justify-between gap-3 rounded-md border border-line bg-white px-4 py-3 text-sm transition-colors duration-200 ease-out hover:border-black"
+            >
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate text-black">{product.name}</span>
+                <span className="truncate font-mono text-xs text-gray-400">
+                  {product.slug}
+                </span>
+              </span>
+              <span className="shrink-0 text-xs font-medium text-black">
+                {/* TODO(i18n) */}
+                Subir foto →
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {/* Un límite callado haría creer que están todos. */}
+      {total > products.length ? (
+        <p className="text-xs text-gray-400">
+          {/* TODO(i18n) */}
+          Se muestran los {products.length} primeros de {total}.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * Fotos rotas (incremento 10).
+ *
+ * La lista es de FILAS, no de productos: lo que hay que arreglar es cada foto,
+ * y un producto puede tener una buena y una rota. El encabezado, en cambio,
+ * cuenta PRODUCTOS, que es lo que también cuenta el aviso del panel de inicio —
+ * los dos números salen de la misma llamada, así que no pueden discrepar.
+ *
+ * Sin paginación y sin límite: si esta lista se hace larga, el problema no es
+ * la lista.
+ */
+async function BrokenImageList() {
+  const market = await getActiveMarket();
+  const images = await listBrokenProductImages(market);
+  const products = new Set(images.map((image) => image.productId)).size;
+
+  if (images.length === 0) {
+    return (
+      <p className="rounded-md border border-line bg-cream px-4 py-8 text-center text-sm text-gray-700">
+        {/* TODO(i18n) */}
+        Todas las fotos del catálogo existen en el almacenamiento.
+      </p>
+    );
+  }
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-medium text-black">
+        {/* TODO(i18n) */}
+        Fotos que ya no están ({images.length} en{" "}
+        {products === 1 ? "1 producto" : `${products} productos`})
+      </h2>
+      <p className="text-xs text-gray-400">
+        {/* TODO(i18n) */}
+        La ficha dice que el producto tiene foto, pero el archivo no está en el
+        almacenamiento: el cliente ve un hueco y al compartir el enlace no sale
+        ninguna imagen. Se arreglan borrando la foto rota desde la ficha y
+        subiendo otra.
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {images.map((image) => (
+          <li key={image.imageId}>
+            <Link
+              href={`/admin/catalogo/${image.productId}`}
+              className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md border border-line bg-white px-4 py-3 text-sm transition-colors duration-200 ease-out hover:border-black"
+            >
+              <span className="flex min-w-0 items-baseline gap-2">
+                <span className="truncate text-black">{image.productName}</span>
+                {image.isPrimary ? (
+                  <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                    {/* TODO(i18n) */}
+                    principal
+                  </span>
+                ) : null}
+              </span>
+              <span className="shrink-0 truncate font-mono text-xs text-gray-400">
+                {image.imageUrl}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

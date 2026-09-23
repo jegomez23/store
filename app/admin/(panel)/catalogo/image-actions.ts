@@ -2,11 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/admin/auth";
-import { parseAltText } from "@/lib/admin/images";
+import { MAX_FILES_PER_BATCH, buildAutoAltText } from "@/lib/admin/images";
 import { isUuid, catalogErrorMessage } from "@/lib/admin/products";
 import { parseSortOrder } from "@/lib/admin/content";
 import { revalidateProductAndHome } from "@/lib/admin/revalidate";
-import { getProductSlugForAdmin } from "@/lib/data/admin/cms";
+import { getProductRefForAdmin, getProductSlugForAdmin } from "@/lib/data/admin/cms";
 import {
   deleteProductImage,
   discardOrphanObject,
@@ -35,6 +35,15 @@ import { createClient } from "@/lib/supabase/server";
 export interface ImageActionState {
   error: string | null;
   success: string | null;
+  /**
+   * Resultado ARCHIVO POR ARCHIVO del último lote (incremento 7).
+   *
+   * Existe para que un éxito parcial no se cuente como fracaso ni como éxito:
+   * si de tres fotos entran dos y falla una, el administrador tiene que poder
+   * ver exactamente cuál falló y por qué, sin adivinar si debe reintentar las
+   * tres. Las otras acciones no lo usan y por eso es opcional.
+   */
+  results?: { name: string; ok: boolean; message: string }[];
 }
 
 // TODO(i18n)
@@ -48,7 +57,84 @@ function readString(formData: FormData, name: string): string {
   return typeof value === "string" ? value : "";
 }
 
-export async function uploadProductImageAction(
+/**
+ * Sube UNA o VARIAS imágenes en un solo envío (incremento 7).
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * POR QUÉ EN SERIE Y NO EN PARALELO
+ * ─────────────────────────────────────────────────────────────────────────
+ * Cada archivo necesita leer la galería para calcular su `sort_order` y si le
+ * toca ser la principal: es un leer-y-escribir. En paralelo, dos archivos de
+ * un producto vacío verían los dos "no hay ninguna" y los dos intentarían
+ * `is_primary = true`; el índice UNIQUE parcial de la 0020 rechazaría el
+ * segundo —comprobado: el segundo INSERT devuelve 409— y esa foto se perdería.
+ * En serie el problema no existe. Además, `sharp` procesa una imagen cada vez
+ * en lugar de sostener cinco decodificadas a la vez.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * ÉXITO PARCIAL: SE INFORMA, NO SE DESHACE
+ * ─────────────────────────────────────────────────────────────────────────
+ * Si de tres fotos entran dos y falla una, las dos buenas SE QUEDAN y se dice
+ * cuál falló. Deshacerlas sería tirar trabajo que ya salió bien y obligar a
+ * repetir el envío entero; y no hay ninguna invariante que exija que un lote
+ * sea todo-o-nada — cada imagen es independiente de las demás.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * STORAGE Y BD NO COMPARTEN TRANSACCIÓN
+ * ─────────────────────────────────────────────────────────────────────────
+ * Se conserva la compensación que ya existía: si el INSERT falla después de
+ * subir el objeto, se borra el objeto (`discardOrphanObject`). Lo que NO se
+ * puede evitar es que el proceso muera entre ambos pasos; ese caso deja bytes
+ * sin dueño, y está documentado como riesgo residual en vez de tapado.
+ */
+/**
+ * Inserta la fila de una imagen resolviendo la CARRERA POR LA PRINCIPAL.
+ *
+ * EL FALLO, REPRODUCIDO sobre el build servido antes de escribir esto: dos
+ * administradores subiendo a la vez a un producto SIN fotos veían los dos "no
+ * hay ninguna", los dos pedían `is_primary = true`, y el índice UNIQUE parcial
+ * de la 0020 rechazaba al segundo. Resultado medido: **de dos imágenes se
+ * guardaba UNA**. La foto del segundo se perdía, con su objeto ya descartado.
+ *
+ * El orden en serie dentro de un lote no lo arregla: la carrera es entre
+ * PETICIONES, y ahí la interfaz no puede hacer nada.
+ *
+ * La solución es la que ya impone la base de datos: si el INSERT choca contra
+ * ese índice, es que otra petición se llevó la principal mientras tanto, así
+ * que se reintenta UNA vez como no-principal. No hace falta bloquear nada ni
+ * añadir una migración: el índice es la autoridad y aquí solo se le hace caso.
+ */
+async function insertImageRow(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  row: {
+    product_id: string;
+    url: string;
+    alt_text: string;
+    sort_order: number;
+    blur_data_url: string | null;
+  },
+  wantsPrimary: boolean,
+): Promise<{ code?: string; message: string } | null> {
+  const { error } = await supabase
+    .from("product_images")
+    .insert({ ...row, is_primary: wantsPrimary });
+
+  if (!error) return null;
+
+  // 23505 = unique_violation. Con `wantsPrimary`, la única restricción única
+  // que se puede tocar es la de "una sola principal por producto".
+  if (error.code === "23505" && wantsPrimary) {
+    const { error: retryError } = await supabase
+      .from("product_images")
+      .insert({ ...row, is_primary: false });
+    if (!retryError) return null;
+    return { code: retryError.code, message: retryError.message };
+  }
+
+  return { code: error.code, message: error.message };
+}
+
+export async function uploadProductImagesAction(
   _prev: ImageActionState,
   formData: FormData,
 ): Promise<ImageActionState> {
@@ -57,67 +143,113 @@ export async function uploadProductImageAction(
   const productId = readString(formData, "productId");
   if (!isUuid(productId)) return { error: INVALID, success: null };
 
-  const alt = parseAltText(readString(formData, "altText"));
-  if (!alt.ok) return { error: alt.error, success: null };
+  const files = formData
+    .getAll("files")
+    .filter((entry): entry is File => entry instanceof File && entry.size > 0);
 
-  const file = formData.get("file");
-  if (!(file instanceof File) || file.size === 0) {
-    return { error: "Selecciona una imagen.", success: null };
+  if (files.length === 0) {
+    return { error: "Selecciona al menos una imagen.", success: null };
+  }
+  if (files.length > MAX_FILES_PER_BATCH) {
+    return {
+      error: `Máximo ${MAX_FILES_PER_BATCH} imágenes por envío. Has seleccionado ${files.length}: hazlo en dos tandas.`,
+      success: null,
+    };
   }
 
   const market = await getActiveMarket();
-  // Verifica pertenencia al mercado Y devuelve el slug real para la ruta.
-  const slug = await getProductSlugForAdmin(market, productId);
-  if (!slug) return { error: NOT_FOUND, success: null };
-
-  // Valida por magic bytes, reescala y convierte a WebP antes de subir.
-  const uploaded = await uploadProductImage(file, slug);
-  if (!uploaded.ok) return { error: uploaded.error, success: null };
+  // Comprueba la pertenencia al mercado Y devuelve slug (ruta del objeto) y
+  // nombre (texto alternativo automático) en una sola consulta.
+  const product = await getProductRefForAdmin(market, productId);
+  if (!product) return { error: NOT_FOUND, success: null };
 
   const supabase = await createClient();
+  const results: NonNullable<ImageActionState["results"]> = [];
+  let uploadedCount = 0;
 
-  // El orden dentro de la galería lo decide el servidor: la nueva va al final.
-  const { data: siblings } = await supabase
-    .from("product_images")
-    .select("id, sort_order")
-    .eq("product_id", productId)
-    .order("sort_order", { ascending: false })
-    .limit(1);
+  for (const file of files) {
+    // Valida por magic bytes, reescala y convierte a WebP antes de subir.
+    const uploaded = await uploadProductImage(file, product.slug);
+    if (!uploaded.ok) {
+      results.push({ name: file.name, ok: false, message: uploaded.error });
+      continue;
+    }
 
-  const nextOrder = (siblings?.[0]?.sort_order ?? -1) + 1;
-  // La primera imagen del producto es la principal automáticamente. El índice
-  // UNIQUE parcial de la migración 0020 impide que haya dos.
-  const isFirst = (siblings?.length ?? 0) === 0;
+    // Se relee en CADA vuelta: la imagen anterior del lote ya cuenta.
+    const { data: siblings } = await supabase
+      .from("product_images")
+      .select("id, sort_order")
+      .eq("product_id", productId)
+      .order("sort_order", { ascending: false })
+      .limit(1);
 
-  const { error } = await supabase.from("product_images").insert({
-    product_id: productId,
-    url: uploaded.path,
-    alt_text: alt.value,
-    sort_order: nextOrder,
-    is_primary: isFirst,
-    // Generado por sharp en el servidor (Fase 9). `null` si no se pudo
-    // generar: la imagen se guarda igual, solo se queda sin placeholder.
-    blur_data_url: uploaded.blurDataUrl,
-  });
+    const nextOrder = (siblings?.[0]?.sort_order ?? -1) + 1;
+    // La primera imagen del producto es la principal automáticamente. El índice
+    // UNIQUE parcial de la migración 0020 impide que haya dos.
+    const isFirst = (siblings?.length ?? 0) === 0;
 
-  if (error) {
-    // Compensación: el objeto ya está subido y nadie lo referencia.
-    await discardOrphanObject(uploaded.path);
-    console.error("[admin] insert de product_images falló", {
-      productId,
-      code: error.code,
-      message: error.message,
+    const error = await insertImageRow(
+      supabase,
+      {
+        product_id: productId,
+        url: uploaded.path,
+        alt_text: buildAutoAltText(product.name, nextOrder + 1),
+        sort_order: nextOrder,
+        // Generado por sharp en el servidor (Fase 9). `null` si no se pudo
+        // generar: la imagen se guarda igual, solo se queda sin placeholder.
+        blur_data_url: uploaded.blurDataUrl,
+      },
+      isFirst,
+    );
+
+    if (error) {
+      // Compensación: el objeto ya está subido y nadie lo referencia.
+      await discardOrphanObject(uploaded.path);
+      console.error("[admin] insert de product_images falló", {
+        productId,
+        code: error.code,
+        message: error.message,
+      });
+      results.push({
+        name: file.name,
+        ok: false,
+        message: catalogErrorMessage(error.code, GENERIC),
+      });
+      continue;
+    }
+
+    uploadedCount += 1;
+    const kb = Math.round(uploaded.bytes / 1024);
+    results.push({
+      name: file.name,
+      ok: true,
+      message: `${uploaded.width}×${uploaded.height}, ${kb} KB en WebP`,
     });
-    return { error: catalogErrorMessage(error.code, GENERIC), success: null };
   }
 
-  revalidateProductAndHome(slug);
-  revalidatePath(`/admin/catalogo/${productId}`);
+  // Una sola invalidación por lote: N imágenes no son N cambios distintos para
+  // la tienda, son un cambio en la misma ficha.
+  if (uploadedCount > 0) {
+    revalidateProductAndHome(product.slug);
+    revalidatePath(`/admin/catalogo/${productId}`);
+  }
 
-  const kb = Math.round(uploaded.bytes / 1024);
+  const failed = results.length - uploadedCount;
+  if (uploadedCount === 0) {
+    return { error: "No se pudo subir ninguna imagen.", success: null, results };
+  }
+  if (failed > 0) {
+    return {
+      // Ni "todo bien" ni "ha fallado": lo que pasó de verdad.
+      error: `${failed} ${failed === 1 ? "imagen no se pudo subir" : "imágenes no se pudieron subir"}.`,
+      success: `${uploadedCount} ${uploadedCount === 1 ? "imagen guardada" : "imágenes guardadas"}.`,
+      results,
+    };
+  }
   return {
     error: null,
-    success: `Imagen subida (${uploaded.width}×${uploaded.height}, ${kb} KB en WebP).`,
+    success: `${uploadedCount} ${uploadedCount === 1 ? "imagen guardada" : "imágenes guardadas"}.`,
+    results,
   };
 }
 

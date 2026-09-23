@@ -1,14 +1,14 @@
 "use client";
 
 import { useActionState } from "react";
-import { Feedback, Field, SubmitButton, TextInput } from "@/components/admin/FormBits";
+import { Feedback, Field, SubmitButton } from "@/components/admin/FormBits";
 import { RemoteImage } from "@/components/ui/RemoteImage";
-import { ALT_TEXT_MAX } from "@/lib/admin/images";
+import { MAX_FILES_PER_BATCH } from "@/lib/admin/images";
 import {
   deleteProductImageAction,
   setImageOrderAction,
   setPrimaryImageAction,
-  uploadProductImageAction,
+  uploadProductImagesAction,
   type ImageActionState,
 } from "@/app/admin/(panel)/catalogo/image-actions";
 import type { AdminProductImageRow } from "@/lib/data/admin/cms";
@@ -25,8 +25,19 @@ import type { AdminProductImageRow } from "@/lib/data/admin/cms";
 
 const INITIAL: ImageActionState = { error: null, success: null };
 
+/**
+ * Subida de una o varias fotos (incremento 7).
+ *
+ * PENSADO PARA EL MÓVIL, que es donde llegan las fotos: un solo control grande
+ * que abre el selector del teléfono con `multiple`, y un botón. No hay campo de
+ * texto alternativo —se genera del nombre del producto— ni arrastrar-y-soltar,
+ * que en un teléfono no existe.
+ *
+ * El resultado se enseña ARCHIVO POR ARCHIVO. Un lote puede salir a medias, y
+ * decir solo "hecho" o solo "error" sería mentir sobre lo que quedó guardado.
+ */
 function UploadForm({ productId }: { productId: string }) {
-  const [state, formAction] = useActionState(uploadProductImageAction, INITIAL);
+  const [state, formAction] = useActionState(uploadProductImagesAction, INITIAL);
 
   return (
     <form
@@ -37,37 +48,49 @@ function UploadForm({ productId }: { productId: string }) {
 
       <div className="flex flex-col gap-0.5">
         {/* TODO(i18n) */}
-        <h2 className="text-sm font-medium text-black">Añadir imagen</h2>
+        <h2 className="text-sm font-medium text-black">Añadir fotos</h2>
         <p className="text-xs text-gray-400">
-          JPEG, PNG o WebP, máximo 5 MB. Se convierte automáticamente a WebP y se
-          reescala a 2000 px como máximo: ocupa ~10 veces menos sin pérdida
-          visible.
+          Puedes elegir varias a la vez (hasta {MAX_FILES_PER_BATCH}). JPEG, PNG
+          o WebP, máximo 5 MB cada una. Se convierten a WebP y se reescalan a
+          2000 px. El texto alternativo se genera del nombre del producto.
         </p>
       </div>
 
-      <Field label="Archivo" name="file">
+      <Field label="Fotos" name="files">
         <input
-          id="file"
-          name="file"
+          id="files"
+          name="files"
           type="file"
+          multiple
           accept="image/jpeg,image/png,image/webp"
           required
-          className="w-full rounded-md border border-line bg-cream px-3 py-2.5 text-sm text-black file:mr-3 file:rounded-full file:border-0 file:bg-black file:px-3 file:py-1.5 file:text-sm file:text-white"
+          // `min-h-11` y el botón grande: objetivo táctil cómodo en móvil.
+          className="w-full rounded-md border border-line bg-cream px-3 py-3 text-sm text-black file:mr-3 file:min-h-11 file:rounded-full file:border-0 file:bg-black file:px-4 file:text-sm file:text-white"
         />
-      </Field>
-
-      <Field
-        label="Texto alternativo"
-        name="altText"
-        hint="Obligatorio: describe la foto para quien no puede verla."
-      >
-        <TextInput name="altText" required maxLength={ALT_TEXT_MAX} hint />
       </Field>
 
       <Feedback state={state} />
 
+      {/* Detalle por archivo: qué entró y qué no. */}
+      {state.results && state.results.length > 0 ? (
+        <ul className="flex flex-col gap-1">
+          {state.results.map((result, index) => (
+            <li
+              key={`${result.name}-${index}`}
+              className={`flex flex-wrap items-baseline gap-x-2 rounded-md px-3 py-2 text-xs ${
+                result.ok ? "bg-cream text-gray-700" : "bg-white text-red ring-1 ring-red"
+              }`}
+            >
+              <span aria-hidden="true">{result.ok ? "✓" : "✗"}</span>
+              <span className="min-w-0 break-all font-medium">{result.name}</span>
+              <span className={result.ok ? "text-gray-400" : ""}>{result.message}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       <div>
-        <SubmitButton label="Subir imagen" pendingLabel="Subiendo…" />
+        <SubmitButton label="Subir fotos" pendingLabel="Subiendo…" />
       </div>
     </form>
   );

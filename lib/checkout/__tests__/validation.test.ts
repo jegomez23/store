@@ -26,6 +26,9 @@ function payload(overrides: Record<string, unknown> = {}): unknown {
     items: [{ variantId: VARIANT_A, quantity: 2 }],
     customer: { name: "Ana Pérez", phone: "+34 600 11 22 33" },
     clientRequestId: "33333333-3333-4333-8333-333333333333",
+    // Obligatorio desde el incremento 8: el cliente debe decir CÓMO quiere
+    // recibirlo. Solo el id; el precio lo resuelve `create_order`.
+    shippingMethodId: "44444444-4444-4444-8444-444444444444",
     sourceUrl: "https://yi.test/checkout",
     ...overrides,
   };
@@ -298,5 +301,47 @@ describe("predicados sueltos", () => {
   test("isValidName", () => {
     assert.equal(isValidName("Ana"), true);
     assert.equal(isValidName(" A "), false);
+  });
+});
+
+describe("método de entrega (incremento 8)", () => {
+  test("sin método el payload se rechaza con su propio código", () => {
+    const result = validateCheckoutInput(payload({ shippingMethodId: undefined }));
+    assert.equal(result.ok, false);
+    assert.equal((result as { error: string }).error, "SHIPPING_METHOD_REQUIRED");
+  });
+
+  test("un método que no es uuid se rechaza", () => {
+    for (const bad of ["", "no-soy-uuid", 42, null, {}]) {
+      const result = validateCheckoutInput(payload({ shippingMethodId: bad }));
+      assert.equal(result.ok, false, JSON.stringify(bad));
+      assert.equal((result as { error: string }).error, "SHIPPING_METHOD_REQUIRED");
+    }
+  });
+
+  test("se normaliza a minúsculas, como el resto de uuids", () => {
+    const result = validateCheckoutInput(
+      payload({ shippingMethodId: "44444444-4444-4444-8444-444444444AAA".slice(0, 36) }),
+    );
+    assert.equal(result.ok, true);
+    assert.equal(
+      (result as { input: { shippingMethodId: string } }).input.shippingMethodId,
+      "44444444-4444-4444-8444-444444444aaa",
+    );
+  });
+
+  test("NINGÚN importe de envío puede entrar en el payload", () => {
+    // El cliente manda `shippingTotal`, `total` y `price`: la validación
+    // devuelve un input normalizado que sencillamente no tiene esos campos, así
+    // que no hay nada que ignorar más adelante.
+    const result = validateCheckoutInput(
+      payload({ shippingTotal: 0, total: 0, price: 0 }),
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const input = result.input as unknown as Record<string, unknown>;
+    assert.equal("shippingTotal" in input, false);
+    assert.equal("total" in input, false);
+    assert.equal("price" in input, false);
   });
 });

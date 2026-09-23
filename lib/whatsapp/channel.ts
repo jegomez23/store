@@ -1,7 +1,7 @@
 import { createOrder } from "@/lib/checkout/create-order";
 import { checkoutErrorMessage } from "@/lib/checkout/errors";
 import { buildOrderMessage } from "@/lib/whatsapp/message";
-import { buildWhatsAppUrl } from "@/lib/whatsapp/phone";
+import { buildWhatsAppUrl, isWhatsAppConfigured } from "@/lib/whatsapp/phone";
 import type {
   CheckoutChannel,
   CheckoutInput,
@@ -28,8 +28,14 @@ export function createWhatsAppChannel(
     async submitOrder(input: CheckoutInput): Promise<CheckoutResult> {
       // Se comprueba ANTES de crear el pedido: si no hay número configurado no
       // tiene sentido registrar un pedido que nadie podrá cerrar.
-      const hasNumber = buildWhatsAppUrl(whatsappNumber, "test") !== null;
-      if (!hasNumber) {
+      //
+      // INCREMENTO 10: antes esto era `buildWhatsAppUrl(...) !== null`, que
+      // solo detectaba un número AUSENTE o malformado. El placeholder del seed
+      // (`34600000000`) tiene 11 dígitos y lo pasaba, así que la tienda creaba
+      // el pedido y mandaba al cliente a un chat que no es el de la tienda: el
+      // cliente creía haber avisado y nadie se enteraba. Decisión de Juan:
+      // mientras el número sea el del seed, NO se vende (DEC-065).
+      if (!isWhatsAppConfigured(whatsappNumber)) {
         console.error("[checkout] WhatsApp sin configurar para el mercado", {
           marketId: market.id,
         });

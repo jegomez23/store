@@ -3,11 +3,14 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import { isLowStock } from "@/lib/admin/catalog";
+import { SUPPLIER_TEXT_LIMIT } from "@/lib/admin/products";
 import {
   updateVariantAction,
   type CatalogActionState,
 } from "@/app/admin/(panel)/catalogo/actions";
-import type { AdminVariant } from "@/lib/data/admin/catalog";
+// El tipo es el del DETALLE del producto (cms), que es lo que realmente le
+// llega desde VariantMatrix: es quien trae supplierRef.
+import type { AdminProductVariantRow } from "@/lib/data/admin/cms";
 
 /**
  * Edición inline de una variante: stock, precio y activa/inactiva.
@@ -38,7 +41,7 @@ export function VariantRow({
   variant,
   currencyCode,
 }: {
-  variant: AdminVariant;
+  variant: AdminProductVariantRow;
   currencyCode: string;
 }) {
   const [state, formAction] = useActionState(updateVariantAction, INITIAL);
@@ -65,6 +68,32 @@ export function VariantRow({
           {[variant.colorName, variant.sizeLabel].filter(Boolean).join(" · ") ||
             /* TODO(i18n) */ "Única"}
         </p>
+      </div>
+
+      {/*
+        Incremento 13. La referencia va JUNTO a la variante porque es el nivel
+        al que llega la disponibilidad externa ("ABC-123 negro M → 4"), y junto
+        al stock para no obligar a cambiar de pantalla entre identificar el
+        artículo y actualizarlo. Se guarda tal cual se escribe.
+      */}
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor={`ref-${variant.id}`}
+          className="text-xs font-medium text-gray-700"
+        >
+          {/* TODO(i18n) */}
+          Ref. proveedor
+        </label>
+        <input
+          id={`ref-${variant.id}`}
+          name="supplierRef"
+          type="text"
+          autoComplete="off"
+          maxLength={SUPPLIER_TEXT_LIMIT}
+          defaultValue={variant.supplierRef ?? ""}
+          placeholder="ABC-123-BLK-M"
+          className="h-11 w-40 rounded-md border border-line bg-white px-3 text-base text-black outline-none focus-visible:border-black md:text-sm"
+        />
       </div>
 
       <div className="flex flex-col gap-1">

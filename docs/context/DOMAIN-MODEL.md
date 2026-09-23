@@ -137,10 +137,13 @@ CheckoutChannel ──procesa──> Order (canal: whatsapp | online)
 
 ### Setting
 **Qué es:** Configuración comercial por mercado (1:1 con Market).
-**Propiedad de:** nombre tienda, logo, WhatsApp number, email contacto, redes sociales, políticas (envío/devoluciones/privacidad como JSON estructurado).
+**Propiedad de:** nombre tienda, **frase de la tienda** (`tagline`), logo, WhatsApp number, email contacto, redes sociales, políticas (envío/devoluciones/privacidad como JSON estructurado).
 **Reglas:**
 - **El número de WhatsApp vive AQUÍ. Prohibido hardcodearlo en componentes** (requisito explícito del producto).
 - Editable íntegramente desde el admin sin tocar código.
+- **El nombre y la frase son la IDENTIDAD PÚBLICA** (incremento 16, DEC-071): alimentan el `<title>` y su plantilla, la `<meta description>`, el logo del Header, el Footer, el Open Graph de la home y de cada ficha, y la imagen que se ve al compartir el enlace. Prohibido escribirlos a mano en un componente o en la metadata.
+- **Frase vacía = la tienda no publica descripción.** `tagline` es NULL-able y `null` no se sustituye por un texto por defecto: no se pinta ninguna.
+- **Una columna nueva de `settings` nace PRIVADA para `anon`** (migración 0041): la lectura pública se concede columna a columna. Ahí es donde aterrizará un Meta Pixel ID o un token de la Conversions API.
 
 ### HomeContent
 **Qué es:** Bloques de contenido editable de la página de inicio.
@@ -152,7 +155,7 @@ CheckoutChannel ──procesa──> Order (canal: whatsapp | online)
 ### ShippingMethod
 **Qué es:** Opción de envío disponible en un mercado.
 **Propiedad de:** nombre, descripción, precio, umbral de envío gratis opcional, orden, activación.
-**Reglas:** Mostrado en ficha de producto y comunicado en el mensaje de WhatsApp; en v1 el coste real se confirma en la conversación.
+**Reglas:** El cliente elige uno en el checkout y su coste entra en el total del pedido (DEC-063, incremento 8). `free_shipping_threshold` NULL = sin umbral; si tiene valor, el envío es gratis cuando el SUBTOTAL de productos lo alcanza. El pedido guarda `shipping_method_id` y un SNAPSHOT del nombre, igual que `order_items` guarda `product_name`.
 
 ### CheckoutChannel
 **Qué es:** Abstracción del mecanismo de cierre de venta (patrón Strategy).

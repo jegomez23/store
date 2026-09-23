@@ -4,6 +4,11 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/admin/auth";
 import { parseWhatsAppNumber } from "@/lib/admin/catalog";
 import { validateSettingsInput } from "@/lib/admin/content";
+import { isUuid } from "@/lib/admin/products";
+import {
+  shippingErrorMessage,
+  validateShippingMethodInput,
+} from "@/lib/admin/shipping";
 import { revalidateStorefront } from "@/lib/admin/revalidate";
 import { getActiveMarket } from "@/lib/markets";
 import { createClient } from "@/lib/supabase/server";
@@ -106,6 +111,7 @@ export async function updateStoreSettingsAction(
 
   const parsed = validateSettingsInput({
     storeName: read("storeName"),
+    tagline: read("tagline"),
     contactEmail: read("contactEmail"),
     instagramUrl: read("instagramUrl"),
     tiktokUrl: read("tiktokUrl"),
@@ -122,6 +128,7 @@ export async function updateStoreSettingsAction(
     .from("settings")
     .update({
       store_name: parsed.input.storeName,
+      tagline: parsed.input.tagline,
       contact_email: parsed.input.contactEmail,
       instagram_url: parsed.input.instagramUrl,
       tiktok_url: parsed.input.tiktokUrl,
@@ -142,12 +149,190 @@ export async function updateStoreSettingsAction(
     return { error: "Este mercado todavía no tiene configuración creada.", success: null };
   }
 
-  // Corrección de Fase 9: el Footer y el logo del Header son texto FIJO, así
-  // que hoy `store_name`, `contact_email` y las redes no se pintan en ninguna
-  // página pública. Se invalida igualmente para que el día que el Footer los
-  // lea no aparezca un desfase silencioso de hasta 5 minutos.
+  /*
+    INCREMENTO 16: esta invalidación dejó de ser preventiva del todo.
+    `store_name` y `tagline` se pintan ahora en el `<title>` de TODAS las
+    páginas de la tienda, en el logo del Header, en el Footer, en el Open Graph
+    de la home y de cada ficha, y en la imagen de portada (`opengraph-image`,
+    que desde este incremento es ISR de 5 min y cae bajo el layout raíz).
+    `revalidateStorefront()` es `revalidatePath("/", "layout")`: el martillo
+    correcto, porque lo que ha cambiado es el chrome de la tienda entera.
+  */
   revalidateStorefront();
   revalidatePath("/admin/ajustes");
 
   return { error: null, success: "Ajustes guardados." };
+}
+
+/* ─────────────────── Métodos de entrega (incremento 9) ───────────────────
+ *
+ * LO QUE SE ESCRIBE AQUÍ DECIDE LO QUE COBRA LA TIENDA (DEC-064). Desde DEC-063 el
+ * precio y el umbral de un método entran en el total del pedido, así que una
+ * errata no rompe una pantalla: cambia el importe de todas las compras
+ * siguientes. De ahí que las tres reglas que importan estén ADEMÁS en la BD
+ * (migración 0036) y no solo en la validación de arriba.
+ *
+ * `market_id` sale SIEMPRE de `getActiveMarket()` y jamás del formulario
+ * (DEC-035). Comprobado contra el proyecto real: un admin ni siquiera puede
+ * crear o mover un método a un mercado inactivo — RLS lo rechaza con 42501.
+ *
+ * ⚠️ **SÍ SE INVALIDA LA TIENDA DESDE EL INCREMENTO 19**, y el comentario que
+ * había aquí —«no hace falta, `/checkout` es dinámica»— dejó de ser cierto en
+ * cuanto la FICHA y el CARRITO empezaron a decir cuánto cuesta el envío. Esas
+ * dos son estáticas con ISR: sin invalidar, el administrador cambiaría 4,90 €
+ * por 6,90 € y el cliente seguiría leyendo 4,90 € en la ficha hasta cinco
+ * minutos después, mientras `create_order` le cobraba 6,90 €. Justo la
+ * contradicción que el incremento 19 venía a quitar.
+ *
+ * `/checkout` sigue sin necesitarlo por ser `force-dynamic`; quienes lo
+ * necesitan son `/producto/[slug]` y `/carrito`.
+ */
+
+export interface ShippingActionState {
+  error: string | null;
+  success: string | null;
+}
+
+// TODO(i18n)
+const INVALID = "Los datos enviados no son válidos.";
+
+function readString(formData: FormData, name: string): string {
+  const value = formData.get(name);
+  return typeof value === "string" ? value : "";
+}
+
+function readShippingForm(formData: FormData) {
+  return validateShippingMethodInput({
+    name: readString(formData, "name"),
+    description: readString(formData, "description"),
+    price: readString(formData, "price"),
+    freeShippingThreshold: readString(formData, "freeShippingThreshold"),
+    sortOrder: readString(formData, "sortOrder"),
+    isActive: formData.get("isActive") === "on",
+  });
+}
+
+/** Fila lista para la BD. `market_id` lo pone quien llama, no esto. */
+function toRow(input: ReturnType<typeof validateShippingMethodInput>) {
+  if (!input.ok) throw new Error("toRow con input inválido");
+  return {
+    name: input.input.name,
+    description: input.input.description,
+    price: input.input.price,
+    free_shipping_threshold: input.input.freeShippingThreshold,
+    sort_order: input.input.sortOrder,
+    is_active: input.input.isActive,
+  };
+}
+
+export async function createShippingMethodAction(
+  _prev: ShippingActionState,
+  formData: FormData,
+): Promise<ShippingActionState> {
+  if (!(await requireAdmin())) return { error: FORBIDDEN, success: null };
+
+  const parsed = readShippingForm(formData);
+  if (!parsed.ok) return { error: parsed.error, success: null };
+
+  const market = await getActiveMarket();
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("shipping_methods")
+    .insert({ ...toRow(parsed), market_id: market.id });
+
+  if (error) {
+    console.error("[admin] createShippingMethod falló", { code: error.code });
+    return { error: shippingErrorMessage(error.code, GENERIC), success: null };
+  }
+
+  // La ficha y el carrito publican el coste del envío (incremento 19).
+  revalidateStorefront();
+  revalidatePath("/admin/ajustes");
+  return { error: null, success: `Método «${parsed.input.name}» creado.` };
+}
+
+export async function updateShippingMethodAction(
+  _prev: ShippingActionState,
+  formData: FormData,
+): Promise<ShippingActionState> {
+  if (!(await requireAdmin())) return { error: FORBIDDEN, success: null };
+
+  const methodId = readString(formData, "methodId");
+  if (!isUuid(methodId)) return { error: INVALID, success: null };
+
+  const parsed = readShippingForm(formData);
+  if (!parsed.ok) return { error: parsed.error, success: null };
+
+  const market = await getActiveMarket();
+  const supabase = await createClient();
+
+  // Se filtra también por mercado: un id de otro mercado afecta a 0 filas en
+  // vez de escribir donde no debe. RLS ya lo impediría; esto es la primera
+  // barrera y da un mensaje entendible.
+  const { data, error } = await supabase
+    .from("shipping_methods")
+    .update(toRow(parsed))
+    .eq("id", methodId)
+    .eq("market_id", market.id)
+    .select("id");
+
+  if (error) {
+    console.error("[admin] updateShippingMethod falló", { methodId, code: error.code });
+    return { error: shippingErrorMessage(error.code, GENERIC), success: null };
+  }
+  if (data.length === 0) {
+    return { error: "El método no existe en este mercado.", success: null };
+  }
+
+  // La ficha y el carrito publican el coste del envío (incremento 19).
+  revalidateStorefront();
+  revalidatePath("/admin/ajustes");
+  return { error: null, success: "Método actualizado." };
+}
+
+/**
+ * Elimina un método.
+ *
+ * BORRAR AQUÍ NO REESCRIBE NINGÚN PEDIDO, y está comprobado contra el proyecto
+ * real: `orders.shipping_method_id` es `ON DELETE SET NULL` (migración 0035),
+ * así que el pedido conserva su `shipping_method_name`, su `shipping_total` y
+ * su `total`; solo pierde el enlace. Por eso no se bloquea el borrado como en
+ * colores y tallas, donde la FK sí lo impide: allí perder la referencia rompía
+ * la variante, aquí no rompe nada.
+ *
+ * Aun así el panel avisa de cuántos pedidos lo usaron antes de ofrecerlo:
+ * borrar es correcto, pero desactivar suele ser lo que el administrador quiere.
+ */
+export async function deleteShippingMethodAction(
+  _prev: ShippingActionState,
+  formData: FormData,
+): Promise<ShippingActionState> {
+  if (!(await requireAdmin())) return { error: FORBIDDEN, success: null };
+
+  const methodId = readString(formData, "methodId");
+  if (!isUuid(methodId)) return { error: INVALID, success: null };
+
+  const market = await getActiveMarket();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("shipping_methods")
+    .delete()
+    .eq("id", methodId)
+    .eq("market_id", market.id)
+    .select("id");
+
+  if (error) {
+    console.error("[admin] deleteShippingMethod falló", { methodId, code: error.code });
+    return { error: shippingErrorMessage(error.code, GENERIC), success: null };
+  }
+  if (data.length === 0) {
+    return { error: "El método no existe en este mercado.", success: null };
+  }
+
+  // La ficha y el carrito publican el coste del envío (incremento 19).
+  revalidateStorefront();
+  revalidatePath("/admin/ajustes");
+  return { error: null, success: "Método eliminado. Los pedidos anteriores lo conservan." };
 }

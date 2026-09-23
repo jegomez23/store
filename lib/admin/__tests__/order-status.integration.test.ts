@@ -54,6 +54,26 @@ function readEnv(): Env | null {
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
 
+/**
+ * Un método de entrega ACTIVO del mercado, resuelto en tiempo real.
+ *
+ * `create_order` exige método desde el incremento 8. No se fija ningún uuid
+ * aquí: se lee el que haya, para que estos tests no dependan de qué métodos
+ * tenga sembrados la tienda.
+ */
+let cachedShippingMethodId: string | null = null;
+async function anyShippingMethodId(): Promise<string> {
+  if (cachedShippingMethodId) return cachedShippingMethodId;
+  const response = await fetch(
+    `${env!.url}/rest/v1/shipping_methods?select=id&market_id=eq.ES&is_active=eq.true&order=sort_order&limit=1`,
+    { headers: { apikey: env!.service, Authorization: `Bearer ${env!.service}` } },
+  );
+  const rows = (await response.json()) as { id: string }[];
+  if (!rows[0]) throw new Error("no hay ningún método de envío activo en ES");
+  cachedShippingMethodId = rows[0].id;
+  return cachedShippingMethodId;
+}
+
 /** Acceso administrativo directo, SOLO para fixtures y limpieza. */
 async function admin(
   path: string,
@@ -198,6 +218,7 @@ async function makeOrder(
       p_customer_phone: "+34 600 11 22 33",
       p_customer_name: "Fixture Fase 7",
       p_client_request_id: crypto.randomUUID(),
+      p_shipping_method_id: await anyShippingMethodId(),
     }),
   });
   const body = (await response.json()) as { order_id?: string; order_number?: string };

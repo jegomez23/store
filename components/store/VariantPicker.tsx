@@ -134,7 +134,14 @@ export function VariantPicker({
             <p id={sizeErrorId} role="alert" className="text-xs font-medium text-red">
               {sizeError}
             </p>
-          ) : !selectedSize ? (
+          ) : !selectedSize && sizes.some(isSizeAvailable) ? (
+            /*
+              «Elige tu talla» solo si QUEDA alguna que elegir (incremento 19).
+              Medido en Chrome con el producto entero agotado: el aviso seguía
+              apareciendo debajo de tres tallas tachadas e imposibles de pulsar,
+              contradiciendo al «Agotado por ahora» de justo arriba. Pedirle al
+              cliente algo que no puede hacer es peor que no decir nada.
+            */
             <p className="text-xs text-gray-400">Elige tu talla</p>
           ) : null}
         </div>

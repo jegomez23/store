@@ -42,6 +42,8 @@ export function Field({
 export function TextInput({
   name,
   defaultValue,
+  value,
+  onChange,
   required,
   maxLength,
   type = "text",
@@ -51,6 +53,13 @@ export function TextInput({
 }: {
   name: string;
   defaultValue?: string;
+  /**
+   * Controlado. Lo necesita la pantalla de crear producto: una sugerencia de la
+   * IA tiene que poder rellenar el campo y el administrador escribir encima.
+   * El resto de formularios siguen siendo NO controlados con `defaultValue`.
+   */
+  value?: string;
+  onChange?: (value: string) => void;
   required?: boolean;
   maxLength?: number;
   type?: string;
@@ -64,7 +73,9 @@ export function TextInput({
       name={name}
       type={type}
       inputMode={inputMode}
-      defaultValue={defaultValue}
+      defaultValue={value === undefined ? defaultValue : undefined}
+      value={value}
+      onChange={onChange ? (event) => onChange(event.target.value) : undefined}
       required={required}
       maxLength={maxLength}
       placeholder={placeholder}
@@ -77,11 +88,16 @@ export function TextInput({
 export function TextArea({
   name,
   defaultValue,
+  value,
+  onChange,
   rows = 4,
   maxLength,
 }: {
   name: string;
   defaultValue?: string;
+  /** Controlado: mismo motivo que en `TextInput`. */
+  value?: string;
+  onChange?: (value: string) => void;
   rows?: number;
   maxLength?: number;
 }) {
@@ -91,7 +107,9 @@ export function TextArea({
       name={name}
       rows={rows}
       maxLength={maxLength}
-      defaultValue={defaultValue}
+      defaultValue={value === undefined ? defaultValue : undefined}
+      value={value}
+      onChange={onChange ? (event) => onChange(event.target.value) : undefined}
       className="w-full rounded-md border border-line bg-cream px-3 py-2 text-base text-black outline-none focus-visible:border-black md:text-sm"
     />
   );

@@ -66,6 +66,82 @@ export async function listSizes(): Promise<SizeOption[]> {
   return (data ?? []).map((s) => ({ id: s.id, label: s.label, sizeGroup: s.size_group }));
 }
 
+/* ───────────────────────── Mantenimiento de atributos (incremento 6) ──────
+ *
+ * `listColors`/`listSizes` de arriba alimentan la MATRIZ y por eso filtran
+ * `is_active`: un valor retirado no debe ofrecerse para crear variantes
+ * nuevas. Estas dos, en cambio, alimentan la PANTALLA DE MANTENIMIENTO, donde
+ * el administrador tiene que ver también lo que retiró —si no, no podría
+ * volver a activarlo—.
+ *
+ * Son dos funciones y no un parámetro `includeInactive` a propósito: el filtro
+ * de la matriz es una regla, no una opción, y un booleano invita a que alguien
+ * lo ponga a `true` desde la pantalla equivocada.
+ *
+ * Que el admin pueda leer los inactivos no es un descuido de RLS: la policy
+ * `admin_all_colors` es `for all using (is_admin())`, sin cláusula de
+ * `is_active`, mientras que `public_read_active_colors` sí la lleva.
+ * Verificado contra el proyecto real: `anon` recibe `[]` para un color
+ * inactivo y el admin lo ve.
+ */
+
+export interface AdminColor {
+  id: string;
+  name: string;
+  slug: string;
+  hexCode: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export interface AdminSize {
+  id: string;
+  label: string;
+  sizeGroup: string;
+  sortOrder: number;
+  isActive: boolean;
+}
+
+export async function listColorsForAdmin(): Promise<AdminColor[]> {
+  if (!(await requireAdmin())) return [];
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("colors")
+    .select("id, name, slug, hex_code, sort_order, is_active")
+    .order("sort_order")
+    .order("name");
+  if (error) throw new Error(`No se pudieron cargar los colores: ${error.message}`);
+  return (data ?? []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    // `hex_code` es `character(7)`: si alguna fila anterior a la 0034 quedó
+    // rellenada con espacios, se recorta para no meterlos en un `style`.
+    hexCode: c.hex_code.trim(),
+    slug: c.slug,
+    sortOrder: c.sort_order,
+    isActive: c.is_active,
+  }));
+}
+
+export async function listSizesForAdmin(): Promise<AdminSize[]> {
+  if (!(await requireAdmin())) return [];
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("sizes")
+    .select("id, label, size_group, sort_order, is_active")
+    .order("size_group")
+    .order("sort_order")
+    .order("label");
+  if (error) throw new Error(`No se pudieron cargar las tallas: ${error.message}`);
+  return (data ?? []).map((s) => ({
+    id: s.id,
+    label: s.label,
+    sizeGroup: s.size_group,
+    sortOrder: s.sort_order,
+    isActive: s.is_active,
+  }));
+}
+
 // ───────────────────────────────────────────────────────────── Categorías
 
 export interface AdminCategory {
@@ -125,6 +201,8 @@ export async function listCategoriesForAdmin(
 export interface AdminProductVariantRow {
   id: string;
   sku: string;
+  /** Referencia del proveedor para ESTA variante (incremento 13). */
+  supplierRef: string | null;
   colorId: string | null;
   sizeId: string | null;
   colorName: string | null;
@@ -163,6 +241,8 @@ export interface AdminProductDetail {
   metaDescription: string | null;
   isFeatured: boolean;
   isNew: boolean;
+  /** De donde viene el articulo (incremento 13). Dato interno. */
+  supplier: string | null;
   variants: AdminProductVariantRow[];
   images: AdminProductImageRow[];
 }
@@ -179,8 +259,8 @@ export async function getProductForAdmin(
     .select(
       `id, name, slug, status, category_id, short_description, description, materials,
        care_instructions, shipping_info_override, meta_title, meta_description,
-       is_featured, is_new,
-       product_variants(id, sku, color_id, size_id, price, stock, low_stock_threshold, is_active, updated_at,
+       is_featured, is_new, supplier,
+       product_variants(id, sku, supplier_ref, color_id, size_id, price, stock, low_stock_threshold, is_active, updated_at,
                         color:colors(name), size:sizes(label)),
        product_images(id, url, alt_text, sort_order, is_primary)`,
     )
@@ -207,10 +287,12 @@ export async function getProductForAdmin(
     metaDescription: data.meta_description,
     isFeatured: data.is_featured,
     isNew: data.is_new,
+    supplier: data.supplier,
     variants: data.product_variants
       .map((v) => ({
         id: v.id,
         sku: v.sku,
+        supplierRef: v.supplier_ref,
         colorId: v.color_id,
         sizeId: v.size_id,
         colorName: v.color?.name ?? null,
@@ -244,17 +326,32 @@ export async function getProductSlugForAdmin(
   market: ActiveMarket,
   productId: string,
 ): Promise<string | null> {
+  return (await getProductRefForAdmin(market, productId))?.slug ?? null;
+}
+
+/**
+ * Slug **y nombre**, comprobando la pertenencia al mercado, en UNA consulta.
+ *
+ * El slug compone la ruta del objeto en Storage y el nombre alimenta el texto
+ * alternativo automático (incremento 7). Ambos salen de la BD y **nunca del
+ * formulario**: si el slug viniera del cliente se podrían escribir objetos bajo
+ * la carpeta de otro producto.
+ */
+export async function getProductRefForAdmin(
+  market: ActiveMarket,
+  productId: string,
+): Promise<{ slug: string; name: string } | null> {
   if (!(await requireAdmin())) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("products")
-    .select("slug")
+    .select("slug, name")
     .eq("id", productId)
     .eq("market_id", market.id)
     .is("deleted_at", null)
     .maybeSingle();
   if (error) throw new Error(`No se pudo verificar el producto: ${error.message}`);
-  return data?.slug ?? null;
+  return data ? { slug: data.slug, name: data.name } : null;
 }
 
 // ─────────────────────────────────────────────────────────────── Home
@@ -305,12 +402,21 @@ export async function listHomeBlocksForAdmin(
 
 export interface AdminSettingsFull {
   storeName: string;
+  /** Frase de la tienda. `null` = no publica descripción (incremento 16). */
+  tagline: string | null;
   whatsappNumber: string;
   contactEmail: string | null;
   instagramUrl: string | null;
   tiktokUrl: string | null;
   facebookUrl: string | null;
+  /** RUTA dentro del bucket `content`, no una URL (incremento 17). */
   logoUrl: string | null;
+  /**
+   * La MISMA URL pública que ve el cliente, ya resuelta. El panel enseña el
+   * resultado real, no una copia local del archivo elegido: si aquí se ve, en
+   * la tienda se ve. `getPublicUrl` es una operación de cadena, sin red.
+   */
+  logoPublicUrl: string | null;
 }
 
 export async function getFullSettingsForAdmin(
@@ -321,7 +427,9 @@ export async function getFullSettingsForAdmin(
 
   const { data, error } = await supabase
     .from("settings")
-    .select("store_name, whatsapp_number, contact_email, instagram_url, tiktok_url, facebook_url, logo_url")
+    .select(
+      "store_name, tagline, whatsapp_number, contact_email, instagram_url, tiktok_url, facebook_url, logo_url",
+    )
     .eq("market_id", market.id)
     .maybeSingle();
 
@@ -330,11 +438,15 @@ export async function getFullSettingsForAdmin(
 
   return {
     storeName: data.store_name,
+    tagline: data.tagline,
     whatsappNumber: data.whatsapp_number,
     contactEmail: data.contact_email,
     instagramUrl: data.instagram_url,
     tiktokUrl: data.tiktok_url,
     facebookUrl: data.facebook_url,
     logoUrl: data.logo_url,
+    logoPublicUrl: data.logo_url
+      ? supabase.storage.from("content").getPublicUrl(data.logo_url).data.publicUrl
+      : null,
   };
 }

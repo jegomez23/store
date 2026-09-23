@@ -53,6 +53,26 @@ function readEnv(): Env | null {
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
 
+/**
+ * Un método de entrega ACTIVO del mercado, resuelto en tiempo real.
+ *
+ * `create_order` exige método desde el incremento 8. No se fija ningún uuid
+ * aquí: se lee el que haya, para que estos tests no dependan de qué métodos
+ * tenga sembrados la tienda.
+ */
+let cachedShippingMethodId: string | null = null;
+async function anyShippingMethodId(): Promise<string> {
+  if (cachedShippingMethodId) return cachedShippingMethodId;
+  const response = await fetch(
+    `${env!.url}/rest/v1/shipping_methods?select=id&market_id=eq.ES&is_active=eq.true&order=sort_order&limit=1`,
+    { headers: { apikey: env!.service, Authorization: `Bearer ${env!.service}` } },
+  );
+  const rows = (await response.json()) as { id: string }[];
+  if (!rows[0]) throw new Error("no hay ningún método de envío activo en ES");
+  cachedShippingMethodId = rows[0].id;
+  return cachedShippingMethodId;
+}
+
 /** Llama a la RPC igual que lo haría el navegador: con la ANON key. */
 async function callCreateOrder(
   args: Record<string, unknown>,
@@ -277,12 +297,15 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     return rows[0].stock;
   }
 
-  const base = (items: unknown[], requestId = uuid()) => ({
+  // `async` desde el incremento 8: el método de entrega se resuelve contra la
+  // BD en vez de fijar un uuid, para no depender de qué haya sembrado.
+  const base = async (items: unknown[], requestId = uuid()) => ({
     p_market_id: "ES",
     p_items: items,
     p_customer_phone: PHONE,
     p_customer_name: NAME,
     p_client_request_id: requestId,
+    p_shipping_method_id: await anyShippingMethodId(),
     p_source_url: "https://yi.test/checkout",
   });
 
@@ -291,7 +314,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     test("crea el pedido y devuelve datos resueltos por el servidor", async () => {
       const before = await stockOf(realVariantId);
       const result = await callCreateOrder(
-        base([{ variant_id: realVariantId, quantity: 2 }]),
+        await base([{ variant_id: realVariantId, quantity: 2 }]),
       );
       assert.equal(result.status, 200, errorCode(result.body));
 
@@ -316,7 +339,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("guarda order_items con snapshots y un order_event inicial", async () => {
       const result = await callCreateOrder(
-        base([{ variant_id: realVariantId, quantity: 1 }]),
+        await base([{ variant_id: realVariantId, quantity: 1 }]),
       );
       const orderId = order(result.body).order_id;
 
@@ -337,8 +360,8 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     });
 
     test("el teléfono se normaliza y el cliente no se duplica", async () => {
-      await callCreateOrder(base([{ variant_id: realVariantId, quantity: 1 }]));
-      await callCreateOrder(base([{ variant_id: realVariantId, quantity: 1 }]));
+      await callCreateOrder(await base([{ variant_id: realVariantId, quantity: 1 }]));
+      await callCreateOrder(await base([{ variant_id: realVariantId, quantity: 1 }]));
 
       const customers = (await admin("customers?select=phone,name")).body as {
         phone: string;
@@ -349,10 +372,10 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("los números de pedido son correlativos por mercado (DEC-027)", async () => {
       const a = order(
-        (await callCreateOrder(base([{ variant_id: realVariantId, quantity: 1 }]))).body,
+        (await callCreateOrder(await base([{ variant_id: realVariantId, quantity: 1 }]))).body,
       );
       const b = order(
-        (await callCreateOrder(base([{ variant_id: realVariantId, quantity: 1 }]))).body,
+        (await callCreateOrder(await base([{ variant_id: realVariantId, quantity: 1 }]))).body,
       );
       const numA = Number(String(a.order_number).split("-")[2]);
       const numB = Number(String(b.order_number).split("-")[2]);
@@ -366,7 +389,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       // Intento de fraude: el atacante inyecta su propio precio dentro de los
       // ítems, que es jsonb libre y acepta cualquier campo extra.
       const result = await callCreateOrder(
-        base([
+        await base([
           {
             variant_id: realVariantId,
             quantity: 1,
@@ -381,12 +404,20 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       assert.equal(result.status, 200, errorCode(result.body));
 
       const data = order(result.body);
+      // Desde el incremento 8 el total incluye el envío, así que lo que prueba
+      // que el precio inyectado se ignoró es el SUBTOTAL de productos.
+      assert.equal(
+        Number(data.subtotal),
+        realVariantPrice,
+        "el subtotal DEBE ser el precio real, no el inyectado",
+      );
+      assert.notEqual(Number(data.subtotal), 1);
+      // Y el total sigue siendo exactamente subtotal + envío, ambos de la BD.
       assert.equal(
         Number(data.total),
-        realVariantPrice,
-        "el total DEBE ser el precio real, no el inyectado",
+        Number(data.subtotal) + Number(data.shipping_total),
+        "total = subtotal + envío",
       );
-      assert.notEqual(Number(data.total), 1);
 
       const items = (await admin(
         `order_items?select=unit_price,line_total&order_id=eq.${data.order_id}`,
@@ -397,7 +428,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     test("STOCK manipulado: se ignora y manda el stock real", async () => {
       const variantId = await makeFixture({ stock: 1 });
       const result = await callCreateOrder(
-        base([
+        await base([
           {
             variant_id: variantId,
             quantity: 5,
@@ -417,7 +448,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       // ni siquiera encuentra la función: no hay superficie por la que colar un
       // importe a nivel de pedido.
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_subtotal: 1,
         p_total: 1,
       });
@@ -429,7 +460,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("nombre de producto inyectado: se usa el de la BD", async () => {
       const result = await callCreateOrder(
-        base([
+        await base([
           {
             variant_id: realVariantId,
             quantity: 1,
@@ -446,7 +477,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
   describe("variante o producto no comprables", () => {
     test("variante inexistente -> VARIANT_NOT_FOUND", async () => {
       const result = await callCreateOrder(
-        base([{ variant_id: "00000000-0000-4000-8000-000000000000", quantity: 1 }]),
+        await base([{ variant_id: "00000000-0000-4000-8000-000000000000", quantity: 1 }]),
       );
       assert.equal(result.status, 400);
       assert.equal(errorCode(result.body), "VARIANT_NOT_FOUND");
@@ -454,20 +485,20 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("variante inactiva -> VARIANT_INACTIVE", async () => {
       const variantId = await makeFixture({ variantActive: false });
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
+      const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }]));
       assert.equal(errorCode(result.body), "VARIANT_INACTIVE");
       assert.equal(await stockOf(variantId), 5, "sin tocar el stock");
     });
 
     test("producto en draft -> PRODUCT_UNAVAILABLE", async () => {
       const variantId = await makeFixture({ productStatus: "draft" });
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
+      const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }]));
       assert.equal(errorCode(result.body), "PRODUCT_UNAVAILABLE");
     });
 
     test("producto eliminado (soft delete) -> PRODUCT_UNAVAILABLE", async () => {
       const variantId = await makeFixture({ productDeleted: true });
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
+      const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }]));
       assert.equal(errorCode(result.body), "PRODUCT_UNAVAILABLE");
     });
 
@@ -531,7 +562,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
           body: JSON.stringify({ status: "active" }),
         });
 
-        const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 1 }]));
+        const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }]));
         assert.equal(errorCode(result.body), "WRONG_MARKET");
       } finally {
         await admin(`product_variants?id=eq.${variantId}`, { method: "DELETE" });
@@ -542,7 +573,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("mercado inactivo -> MARKET_UNAVAILABLE", async () => {
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_market_id: "CO", // existe pero is_active = false
       });
       assert.equal(errorCode(result.body), "MARKET_UNAVAILABLE");
@@ -550,7 +581,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("mercado inexistente -> MARKET_UNAVAILABLE", async () => {
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_market_id: "XX",
       });
       assert.equal(errorCode(result.body), "MARKET_UNAVAILABLE");
@@ -561,14 +592,14 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
   describe("stock", () => {
     test("cantidad superior al stock -> OUT_OF_STOCK y nada se modifica", async () => {
       const variantId = await makeFixture({ stock: 3 });
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 4 }]));
+      const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 4 }]));
       assert.equal(errorCode(result.body), "OUT_OF_STOCK");
       assert.equal(await stockOf(variantId), 3);
     });
 
     test("comprar exactamente el stock disponible funciona y lo deja a 0", async () => {
       const variantId = await makeFixture({ stock: 3 });
-      const result = await callCreateOrder(base([{ variant_id: variantId, quantity: 3 }]));
+      const result = await callCreateOrder(await base([{ variant_id: variantId, quantity: 3 }]));
       assert.equal(result.status, 200, errorCode(result.body));
       assert.equal(await stockOf(variantId), 0);
     });
@@ -578,7 +609,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       const fails = await makeFixture({ stock: 1, sizeIndex: 1 });
 
       const result = await callCreateOrder(
-        base([
+        await base([
           { variant_id: ok, quantity: 2 },
           { variant_id: fails, quantity: 5 },
         ]),
@@ -595,8 +626,8 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       const variantId = await makeFixture({ stock: 1 });
 
       const [a, b] = await Promise.all([
-        callCreateOrder(base([{ variant_id: variantId, quantity: 1 }])),
-        callCreateOrder(base([{ variant_id: variantId, quantity: 1 }])),
+        callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }])),
+        callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }])),
       ]);
 
       const okCount = [a, b].filter((r) => r.status === 200).length;
@@ -611,8 +642,8 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       const variantId = await makeFixture({ stock: 3 });
 
       const results = await Promise.all(
-        Array.from({ length: 10 }, () =>
-          callCreateOrder(base([{ variant_id: variantId, quantity: 1 }])),
+        Array.from({ length: 10 }, async () =>
+          callCreateOrder(await base([{ variant_id: variantId, quantity: 1 }])),
         ),
       );
 
@@ -627,7 +658,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     test("doble submit con el mismo client_request_id -> UN solo pedido", async () => {
       const variantId = await makeFixture({ stock: 10 });
       const requestId = uuid();
-      const args = base([{ variant_id: variantId, quantity: 2 }], requestId);
+      const args = await base([{ variant_id: variantId, quantity: 2 }], requestId);
 
       const first = await callCreateOrder(args);
       const second = await callCreateOrder(args);
@@ -663,7 +694,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     test("retry tras 'timeout': devuelve el pedido sin volver a descontar", async () => {
       const variantId = await makeFixture({ stock: 10 });
       const requestId = uuid();
-      const args = base([{ variant_id: variantId, quantity: 3 }], requestId);
+      const args = await base([{ variant_id: variantId, quantity: 3 }], requestId);
 
       const first = order((await callCreateOrder(args)).body);
       const stockAfterFirst = await stockOf(variantId);
@@ -684,7 +715,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
     test("dos pestañas enviando a la vez con el mismo id -> un pedido", async () => {
       const variantId = await makeFixture({ stock: 10 });
       const requestId = uuid();
-      const args = base([{ variant_id: variantId, quantity: 1 }], requestId);
+      const args = await base([{ variant_id: variantId, quantity: 1 }], requestId);
 
       const results = await Promise.all([
         callCreateOrder(args),
@@ -711,7 +742,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       const requestId = uuid();
 
       const first = await callCreateOrder(
-        base([{ variant_id: variantId, quantity: 2 }], requestId),
+        await base([{ variant_id: variantId, quantity: 2 }], requestId),
       );
       assert.equal(first.status, 200, errorCode(first.body));
       const stockAfterFirst = await stockOf(variantId);
@@ -719,14 +750,14 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
       // Misma clave, cantidad distinta.
       const conflict = await callCreateOrder(
-        base([{ variant_id: variantId, quantity: 7 }], requestId),
+        await base([{ variant_id: variantId, quantity: 7 }], requestId),
       );
       assert.equal(conflict.status, 400);
       assert.equal(errorCode(conflict.body), "IDEMPOTENCY_KEY_REUSED");
 
       // Misma clave, teléfono distinto.
       const conflictPhone = await callCreateOrder({
-        ...base([{ variant_id: variantId, quantity: 2 }], requestId),
+        ...await base([{ variant_id: variantId, quantity: 2 }], requestId),
         p_customer_phone: "+34 611 00 00 00",
       });
       assert.equal(errorCode(conflictPhone.body), "IDEMPOTENCY_KEY_REUSED");
@@ -745,7 +776,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       const requestId = uuid();
 
       const first = await callCreateOrder(
-        base(
+        await base(
           [
             { variant_id: v1, quantity: 1 },
             { variant_id: v2, quantity: 1 },
@@ -757,7 +788,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
       // Mismos ítems, orden invertido: debe considerarse el MISMO payload.
       const second = await callCreateOrder(
-        base(
+        await base(
           [
             { variant_id: v2, quantity: 1 },
             { variant_id: v1, quantity: 1 },
@@ -771,7 +802,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("client_request_id nulo -> INVALID_INPUT", async () => {
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_client_request_id: null,
       });
       assert.equal(errorCode(result.body), "INVALID_INPUT");
@@ -796,7 +827,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
         const payload = JSON.parse(
           JSON.stringify(items).replaceAll("PLACEHOLDER", realVariantId),
         );
-        const result = await callCreateOrder(base(payload));
+        const result = await callCreateOrder(await base(payload));
         assert.equal(result.status, 400, `esperaba fallo, obtuve ${result.status}`);
         assert.ok(
           ["EMPTY_CART", "INVALID_INPUT"].includes(errorCode(result.body)),
@@ -807,7 +838,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("teléfono inválido -> INVALID_CUSTOMER_PHONE", async () => {
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_customer_phone: "123",
       });
       assert.equal(errorCode(result.body), "INVALID_CUSTOMER_PHONE");
@@ -815,7 +846,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("nombre vacío -> INVALID_CUSTOMER_NAME", async () => {
       const result = await callCreateOrder({
-        ...base([{ variant_id: realVariantId, quantity: 1 }]),
+        ...await base([{ variant_id: realVariantId, quantity: 1 }]),
         p_customer_name: "  ",
       });
       assert.equal(errorCode(result.body), "INVALID_CUSTOMER_NAME");
@@ -823,7 +854,7 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
 
     test("variant_id duplicado -> INVALID_INPUT", async () => {
       const result = await callCreateOrder(
-        base([
+        await base([
           { variant_id: realVariantId, quantity: 1 },
           { variant_id: realVariantId, quantity: 1 },
         ]),

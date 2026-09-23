@@ -34,6 +34,7 @@ PRODUCTO ──> VARIANTE (color/talla) ──> CARRITO
 Puntos clave:
 - El pedido se registra **antes** de abrir WhatsApp → existe trazabilidad aunque el usuario no envíe el mensaje.
 - El número de WhatsApp sale de `settings.whatsapp_number` del mercado activo. **Prohibido hardcodearlo.**
+- **«Número válido» NO es «tienda configurada»** (incremento 10, DEC-065). El placeholder del seed `34600000000` pasa todas las comprobaciones de forma —11 dígitos, enlace construible— y durante meses hizo que el checkout **creara el pedido** y mandara al cliente a un chat que no es el de la tienda. El único predicado es ahora `isWhatsAppConfigured()` en `lib/whatsapp/phone.ts`, y lo comparten el canal de checkout y el panel. Con el número del seed, `createWhatsAppChannel` devuelve `CHECKOUT_NOT_CONFIGURED` **antes** de llamar a `createOrder`: no se registra nada. `PLACEHOLDER_WHATSAPP_NUMBERS` contiene exactamente lo que siembra el repositorio —un test lee el archivo de seed para impedir que se separen— y **no debe ampliarse con números que "parezcan falsos"**.
 - Re-validación server-side en la generación: precio real de BD, stock disponible, promociones vigentes. El carrito local es solo propuesta.
 
 ---
@@ -87,7 +88,8 @@ Total: 94,80 €
 ### Reglas de generación
 
 - Formato de precio según locale del mercado (`es-CO` → `$ 89.900` COP; `es-ES` → `34,90 €`) vía `lib/money/`.
-- **Fase 6 no aplica promociones ni envío** (`discount_total = 0`, `shipping_total = 0`): no están en las tareas de Fase 6 del roadmap y la regla "promoción más favorable gana" sigue pendiente de confirmación humana (`01-PRODUCT.md`). El mensaje solo imprime las líneas `Descuento:` / `Envío:` cuando esos importes son > 0, así que el código ya está preparado sin inventar reglas comerciales.
+- **Promociones**: siguen sin aplicarse (`discount_total = 0`) — la regla "promoción más favorable gana" sigue pendiente de confirmación humana (`01-PRODUCT.md`). La línea `Descuento:` solo aparece cuando el importe es > 0.
+- **Envío (desde el incremento 8, DEC-063)**: el mensaje imprime `Envío (nombre del método): importe` **siempre que el pedido tenga método**, incluso cuando cuesta 0. Callarlo cuando es gratis dejaría al cliente sin saber si está incluido o pendiente de acordar. Los importes son los del pedido devuelto por `create_order`: **el mensaje no recalcula nada**, porque sumar por su cuenta podría contradecir lo registrado en la BD. Un pedido anterior al incremento (sin método) no imprime línea de envío.
 - Se añade al final una línea con el número de pedido para referencia cruzada:
   `Pedido: YI-ES-000001` (formato fijado en DEC-027).
 - Mensaje construido por la función pura `buildOrderMessage(order, market)` — testeable sin red ni BD. Recibe un `TrustedOrder` (datos ya resueltos por PostgreSQL), **nunca el carrito del cliente**: si el usuario manipuló el precio en localStorage, el mensaje sigue diciendo el precio real.

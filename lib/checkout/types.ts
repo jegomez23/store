@@ -1,3 +1,7 @@
+// Relativo y con extensión: este módulo lo cargan tests que corren con
+// `node --test` (DEC-025/DEC-066).
+import type { Attribution } from "../attribution/attribution.ts";
+
 /**
  * Contratos del checkout (Fase 6).
  *
@@ -37,8 +41,22 @@ export interface CheckoutInput {
    * pestañas (DEC-028).
    */
   clientRequestId: string;
+  /**
+   * QUÉ método de entrega quiere el cliente. Es lo ÚNICO que puede decir del
+   * envío: el precio, el umbral y el nombre los resuelve `create_order` contra
+   * `shipping_methods` del mercado. Enviar un id inventado, inactivo o de otro
+   * mercado levanta `INVALID_SHIPPING_METHOD` (incremento 8).
+   */
+  shippingMethodId: string;
   /** URL desde la que se generó el pedido. Se recorta y guarda como referencia. */
   sourceUrl?: string;
+  /**
+   * Atribución de marketing capturada en la landing (incremento 14). Solo las
+   * siete claves de `ATTRIBUTION_KEYS`, ya saneadas. `null` cuando el tráfico
+   * es directo. Si viniera basura, `create_order` la descarta y el pedido se
+   * crea igual: no puede impedir una venta.
+   */
+  attribution?: Attribution | null;
 }
 
 /** Línea ya resuelta por el servidor. Todos estos valores vienen de la BD. */
@@ -63,6 +81,8 @@ export interface TrustedOrder {
   subtotal: number;
   discountTotal: number;
   shippingTotal: number;
+  /** Nombre del método TAL Y COMO quedó guardado en el pedido. */
+  shippingMethodName: string | null;
   total: number;
   items: TrustedOrderLine[];
   /** true si esta llamada reutilizó un pedido ya existente (retry idempotente). */

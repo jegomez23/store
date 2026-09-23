@@ -8,7 +8,10 @@ import { safeAdminRedirect } from "@/lib/admin/redirect";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Acceso",
+  // Autodescriptivo: el login está fuera del grupo `(panel)`, así que no
+  // hereda su plantilla `%s · Panel`, y desde el incremento 16 el layout raíz
+  // ya no aporta ninguna (el nombre de la tienda vive en `settings`).
+  title: "Acceso al panel",
   // El panel no se indexa (docs/rules/security.md #13; robots.ts llega en Fase 8).
   robots: { index: false, follow: false },
 };
@@ -18,6 +21,10 @@ export default async function AdminLoginPage(
 ) {
   const searchParams = await props.searchParams;
   const rawNext = searchParams.next;
+  // Vuelta desde /admin/reset-password tras guardar la contraseña nueva.
+  const rawPassword = searchParams.password;
+  const justChanged =
+    (Array.isArray(rawPassword) ? rawPassword[0] : rawPassword) === "cambiada";
   const next = safeAdminRedirect(
     Array.isArray(rawNext) ? rawNext[0] : rawNext,
   );
@@ -38,6 +45,16 @@ export default async function AdminLoginPage(
           {/* TODO(i18n) */}
           <p className="mt-1 text-sm text-gray-700">Panel de administración</p>
         </div>
+
+        {justChanged ? (
+          <p
+            role="status"
+            className="mb-4 rounded-md border border-line bg-white px-4 py-3 text-sm text-black"
+          >
+            {/* TODO(i18n) */}
+            Contraseña actualizada. Entra con la nueva.
+          </p>
+        ) : null}
 
         {access.status === "forbidden" ? (
           <p

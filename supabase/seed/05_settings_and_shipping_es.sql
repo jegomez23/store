@@ -2,8 +2,8 @@
 -- whatsapp_number es un número de prueba, NO real (docs/rules/database.md #14).
 -- Idempotente (Fase 4.5): reejecutable sin duplicados.
 
-insert into public.settings (market_id, store_name, whatsapp_number, policies)
-values ('ES', 'YI', '34600000000', '{}'::jsonb)
+insert into public.settings (market_id, store_name, tagline, whatsapp_number, policies)
+values ('ES', 'YI', 'Vive a tu propio ritmo.', '34600000000', '{}'::jsonb)
 on conflict (market_id) do nothing;
 
 -- shipping_methods no tiene clave natural con constraint (la PK es un uuid),

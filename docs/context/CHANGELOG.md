@@ -4,6 +4,18 @@
 
 ---
 
+## Incremento 20 — Admin minimalista y alta de producto asistida por IA (2026-09-11)
+
+- **La foto es lo primero.** `/admin/catalogo/nuevo` pasa de **13 campos y ninguna forma de subir una foto** a una sola pantalla: foto, cuatro campos imprescindibles y el resto plegado. El producto se crea **en borrador y con su imagen ya subida en el mismo envío** (`createProductWithPhotoAction`), reutilizando la tubería del catálogo (magic bytes → `sharp` → WebP → blur → `is_primary`).
+- **Capa de asistencia por IA, con contrato** (DEC-083, DEC-084): un puerto `ProductAssistant`, un adaptador sobre la API de Claude y una Server Action que **no importa ningún cliente de escritura**. La IA propone nombre, descripción, categoría y color; **composición, materiales, cuidados, tallas, precio, stock, proveedor, referencia y origen no existen en el tipo de la sugerencia**. Categoría y color se validan contra el catálogo real. «No determinado» es una respuesta válida y se dice en pantalla. Nada se guarda por duplicado: no hay columnas `ai_*` ni tabla de prompts.
+- **Panel simplificado** (DEC-085): los bloques sin contenido dejan de pintarse, el menú se separa entre operar y configurar **sin eliminar ninguna ruta**, `/admin` gana la acción primaria «+ Añadir producto» y el enlace de marca pasa de 28 a 44 px. Sin métricas de vanidad ni gráficas.
+- **Una dependencia nueva, justificada y registrada:** `@anthropic-ai/sdk` ^0.125.0. `server-only`: **0 bytes en el bundle de cliente**.
+- **Bug encontrado y corregido con el build servido delante:** exportar una constante desde un archivo `"use server"` rompía el módulo —«A "use server" file can only export async functions, found object»— y **el formulario de alta no llegaba a enviarse**, sin error visible en pantalla. `ASSIST_IDLE` vive ahora en `lib/ai/assist-state.ts`.
+- **Verificación:** 1114 tests (`npm test`), 26 nuevos; **E2E 37/37** del alta completa con foto real subida a Storage y **12/12** del asistente caído, en Chrome 153 headless a 390×844 sobre el build servido; perf 9/9 (`/admin` TTFB 181 ms, FCP 484 ms). `lint`, `tsc` y `build` verdes. BD y Storage devueltos a su baseline exacto.
+- **Lo que NO está verificado y no se finge:** la calidad de una sugerencia real. Este entorno no tiene `ANTHROPIC_API_KEY`; sí se comprobó que la petición sale de verdad hacia el proveedor y que el fallo se maneja sin tumbar la pantalla.
+
+---
+
 ## 2026-09-02 — FASE 9: SEO, imágenes y una estrategia de caché por fin medida
 
 **What changed:**

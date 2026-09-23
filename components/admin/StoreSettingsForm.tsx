@@ -36,6 +36,25 @@ export function StoreSettingsForm({ settings }: { settings: AdminSettingsFull })
         />
       </Field>
 
+      {/*
+        LA FRASE (incremento 16). Va justo debajo del nombre porque son la
+        misma decisión: cómo se llama la tienda y qué dice de sí misma. El
+        `hint` avisa de dónde se ve, que es lo que evita escribir aquí una nota
+        interna creyendo que no la lee nadie.
+      */}
+      <Field
+        label="Frase de la tienda"
+        name="tagline"
+        hint="Sale en Google, al compartir el enlace y en el pie. Vacío = sin frase."
+      >
+        <TextInput
+          name="tagline"
+          defaultValue={settings.tagline ?? ""}
+          maxLength={SETTINGS_LIMITS.tagline}
+          hint
+        />
+      </Field>
+
       <Field label="Email de contacto" name="contactEmail">
         <TextInput
           name="contactEmail"

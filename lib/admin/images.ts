@@ -13,6 +13,37 @@
 /** 5 MiB — el mismo valor que `storage.buckets.file_size_limit` (migración 0020). */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Archivos por envío (incremento 7).
+ *
+ * NO es un límite comercial: no acota cuántas fotos puede tener un producto —
+ * se pueden hacer varios envíos seguidos—. Es la capacidad de UNA petición.
+ *
+ * Sale de un hecho medido: Next limita el cuerpo de una Server Action a **1 MB
+ * por defecto**, y este proyecto no lo había configurado. Comprobado sobre el
+ * build servido antes de tocar nada:
+ *
+ *     jpeg de 0,32 MB → HTTP 200, fila creada
+ *     jpeg de 1,20 MB → HTTP 500 · "Body exceeded 1 MB limit"
+ *
+ * Es decir: una foto de móvil normal (2–5 MB) NO se podía subir, aunque la
+ * validación de la aplicación y el bucket admiten 5 MB. Con `bodySizeLimit`
+ * puesto a `ACTION_BODY_LIMIT_BYTES`, caben `MAX_FILES_PER_BATCH` archivos del
+ * tamaño máximo permitido.
+ */
+export const MAX_FILES_PER_BATCH = 5;
+
+/**
+ * Lo que hay que configurar en `experimental.serverActions.bodySizeLimit`.
+ *
+ * El margen extra no es decorativo: los docs de Next avisan de que el límite
+ * se aplica al cuerpo HTTP **crudo**, incluidas las fronteras y cabeceras que
+ * añade `multipart/form-data`. Sin holgura, un lote de archivos justo en el
+ * máximo se rechazaría por unos kilobytes de sobre.
+ */
+export const ACTION_BODY_LIMIT_BYTES =
+  MAX_FILES_PER_BATCH * MAX_IMAGE_BYTES + 1024 * 1024;
+
 export const ACCEPTED_FORMATS = ["jpeg", "png", "webp"] as const;
 export type ImageFormat = (typeof ACCEPTED_FORMATS)[number];
 
@@ -83,6 +114,29 @@ export function checkImageUpload(
 
 export const ALT_TEXT_MAX = 160;
 
+/**
+ * Texto alternativo automático a partir del nombre del producto (incremento 7).
+ *
+ * DECISIÓN DE PRODUCTO, tomada por Juan: subir varias fotos de golpe no pide
+ * un alt por archivo; se genera del nombre del producto y su posición en la
+ * galería.
+ *
+ * CONSECUENCIA HONESTA, que conviene no maquillar: un alt así **no describe la
+ * foto**, solo la identifica. Para un lector de pantalla es bastante menos útil
+ * que una descripción escrita a mano. Se acepta a cambio de que subir tres
+ * fotos sean tres toques y no tres formularios; queda anotado como límite de
+ * accesibilidad conocido, no como un acierto.
+ *
+ * `alt_text` es NOT NULL y `parseAltText` exige 3 caracteres, así que un
+ * nombre muy corto no puede dejar la subida sin alt: de ahí el respaldo.
+ */
+export function buildAutoAltText(productName: string, position: number): string {
+  const base = productName.trim().replace(/\s+/g, " ");
+  const candidate = position > 1 ? `${base} (${position})` : base;
+  const value = candidate.length >= 3 ? candidate : `${base} foto ${position}`.trim();
+  return value.slice(0, ALT_TEXT_MAX);
+}
+
 export type AltTextResult = { ok: true; value: string } | { ok: false; error: string };
 
 /** `product_images.alt_text` es NOT NULL: es obligatorio y es accesibilidad. */
@@ -119,6 +173,41 @@ export function buildImagePath(productSlug: string, uuid: string): string {
 export function pathBelongsToProduct(path: string, productSlug: string): boolean {
   const safeSlug = productSlug.replace(/[^a-z0-9-]/g, "").slice(0, 80) || "producto";
   return /^[a-z0-9-]+\/[0-9a-f-]+\.webp$/.test(path) && path.startsWith(`${safeSlug}/`);
+}
+
+/**
+ * ── Logo de la tienda (incremento 17) ─────────────────────────────────────
+ *
+ * Vive en el bucket `content`, no en `products`: no es catálogo, es identidad,
+ * y `content` ya existe con las policies correctas desde la migración 0015
+ * (lectura pública, escritura solo `is_admin()`). **No hace falta migración de
+ * Storage.**
+ *
+ * La ruta lleva el mercado porque `settings` es 1:1 con mercado: el día que CO
+ * se active tendrá su propio logo y los dos objetos conviven sin pisarse.
+ *
+ * El uuid NO es decorativo: cada sustitución escribe un objeto NUEVO en vez de
+ * sobrescribir el anterior. Sobrescribir la misma ruta dejaría el CDN sirviendo
+ * el logo viejo hasta que caducara su caché, y el administrador vería que «no
+ * se ha guardado». Con un nombre nuevo, la URL cambia y el navegador no puede
+ * enseñar el anterior.
+ */
+export function buildLogoPath(marketId: string, uuid: string): string {
+  const safeMarket = marketId.replace(/[^A-Za-z0-9-]/g, "").slice(0, 16) || "market";
+  return `logo/${safeMarket}-${uuid}.webp`;
+}
+
+/**
+ * ¿Es una ruta de logo de ESTE mercado?
+ *
+ * Se comprueba antes de borrar. La RLS de Storage solo mira que seas admin, no
+ * qué objeto es: sin esto, un `logo_url` manipulado en la base de datos podría
+ * hacer que la acción de sustituir borrase una foto de catálogo.
+ */
+export function isLogoPath(path: string | null | undefined, marketId: string): boolean {
+  if (typeof path !== "string") return false;
+  const safeMarket = marketId.replace(/[^A-Za-z0-9-]/g, "").slice(0, 16) || "market";
+  return new RegExp(`^logo/${safeMarket}-[0-9a-f-]+\\.webp$`).test(path);
 }
 
 /**

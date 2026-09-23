@@ -140,8 +140,23 @@ const MAX_QUERY_LENGTH = 40;
 
 export interface OrderListParams {
   status: OrderStatus | null;
-  /** Búsqueda por número de pedido, ya normalizada. */
+  /**
+   * Lo que el administrador escribió, ya saneado. Puede ser un número de
+   * pedido, un teléfono o un nombre: quién decide qué es no es esta capa
+   * (ver `orderSearchTokens`). Vuelve tal cual al input y a la URL.
+   */
   query: string | null;
+  /**
+   * El administrador escribió algo y NO quedó nada utilizable tras sanear
+   * (por ejemplo `%` o `***`).
+   *
+   * Sin esto, esa búsqueda se comportaba como "no he buscado nada" y la
+   * pantalla devolvía **el listado entero**, que se lee como "tu búsqueda ha
+   * encontrado todo". Medido sobre el build servido antes de corregirlo: `%`
+   * devolvía los tres pedidos de prueba. Buscar algo inservible tiene que dar
+   * cero resultados y decir por qué.
+   */
+  unusableQuery: boolean;
   /** 1-indexado. */
   page: number;
 }
@@ -163,19 +178,25 @@ export function parseOrderListParams(
   const rawPage = firstValue(searchParams.pagina);
 
   const page = Number.parseInt(rawPage ?? "", 10);
+  const query = sanitizeOrderSearch(rawQuery);
 
   return {
     status: isOrderStatus(rawStatus) ? rawStatus : null,
-    query: normalizeOrderQuery(rawQuery),
+    query,
+    unusableQuery: (rawQuery ?? "").trim().length > 0 && query === null,
     page: Number.isInteger(page) && page >= 1 && page <= MAX_PAGE ? page : 1,
   };
 }
 
 /**
- * La búsqueda es por número de pedido (`YI-ES-000001`). Se recortan los
- * caracteres que no forman parte del formato: además de limpiar la entrada,
- * evita que `%`, `_`, `,` o `*` lleguen al patrón `ilike` de PostgREST y
- * cambien su significado.
+ * Normaliza un NÚMERO de pedido (`YI-ES-000001`). Se recortan los caracteres
+ * que no forman parte del formato: además de limpiar la entrada, evita que
+ * `%`, `_`, `,` o `*` lleguen al patrón `ilike` de PostgREST y cambien su
+ * significado.
+ *
+ * La usan el detalle (`/admin/pedidos/[numero]`) y la action de cambio de
+ * estado, donde lo que llega ES un número de pedido y nada más. **El buscador
+ * del listado ya no la usa**: ver `sanitizeOrderSearch`.
  */
 export function normalizeOrderQuery(raw: string | undefined | null): string | null {
   if (typeof raw !== "string") return null;
@@ -184,6 +205,75 @@ export function normalizeOrderQuery(raw: string | undefined | null): string | nu
     .replace(/[^A-Z0-9-]/g, "")
     .slice(0, MAX_QUERY_LENGTH);
   return cleaned.length > 0 ? cleaned : null;
+}
+
+// ───────────────────────────────────────────── Buscador del listado (P3)
+
+/**
+ * Sanea lo que el administrador escribe en el buscador de pedidos.
+ *
+ * POR QUÉ NO SIRVE `normalizeOrderQuery` AQUÍ: pasa todo a mayúsculas y borra
+ * espacios y acentos, que es correcto para `YI-ES-000001` y destruye un nombre
+ * ("Ana Pérez" quedaba en "ANAPREZ"). El buscador tiene que admitir tres
+ * cosas —número, teléfono y nombre— así que conserva el texto y se limita a
+ * quitar lo que podría cambiar el significado de la consulta.
+ *
+ * QUÉ SE QUITA Y POR QUÉ, que no es cosmético:
+ *   · `%` y `_`   — comodines de LIKE en PostgreSQL.
+ *   · `*`         — comodín de `ilike` en la sintaxis de PostgREST.
+ *   · `,` `(` `)` `.` — separan y agrupan en el `or=(…)` de PostgREST: con
+ *     ellos dentro, el texto del usuario dejaría de ser un valor y pasaría a
+ *     ser estructura de la consulta.
+ *   · `\` y comillas — por no dejar ningún escape suelto.
+ *
+ * Se CONSERVAN letras con tilde y con ñ, espacios, guiones y apóstrofos,
+ * porque son parte legítima de un nombre.
+ */
+export function sanitizeOrderSearch(raw: string | undefined | null): string | null {
+  if (typeof raw !== "string") return null;
+  const cleaned = raw
+    .replace(/[^\p{L}\p{N} '-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_QUERY_LENGTH)
+    .trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * Los tres patrones que salen de UNA caja de búsqueda.
+ *
+ * No hay heurística: no se adivina si lo escrito "parece un teléfono" o "parece
+ * un número de pedido". Se buscan **las tres cosas a la vez** y se devuelve la
+ * unión, porque adivinar falla justo en el caso ambiguo — `000003` es a la vez
+ * un trozo de número de pedido y un trozo de teléfono plausible.
+ *
+ * `digits` va aparte porque `customers.phone` se guarda **solo con dígitos**
+ * (`create_order` hace `regexp_replace(..., '[^0-9]', '', 'g')`), así que pegar
+ * "+34 600 111 222" del chat no casaría nunca con un `ilike` del texto crudo.
+ *
+ * Sin I/O: ejecutable con `node --test` (DEC-025).
+ */
+export interface OrderSearchTokens {
+  /** Para `orders.order_number`. Mayúsculas, solo `[A-Z0-9-]`. */
+  orderNumber: string | null;
+  /** Para `customers.phone`. Solo dígitos. */
+  digits: string | null;
+  /** Para `customers.name`. El texto tal cual lo escribió. */
+  name: string | null;
+}
+
+export function orderSearchTokens(query: string | null): OrderSearchTokens {
+  if (!query) return { orderNumber: null, digits: null, name: null };
+
+  const orderNumber = query.toUpperCase().replace(/[^A-Z0-9-]/g, "");
+  const digits = query.replace(/\D/g, "");
+
+  return {
+    orderNumber: orderNumber.length > 0 ? orderNumber : null,
+    digits: digits.length > 0 ? digits : null,
+    name: query,
+  };
 }
 
 export function totalPages(count: number): number {

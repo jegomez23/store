@@ -34,13 +34,11 @@ begin
 
   select id into v_product_id from public.products where market_id = 'ES' and slug = 'chaqueta-cortavientos-cumbre';
 
-  insert into public.product_images (product_id, url, alt_text, sort_order, is_primary)
-  select v_product_id, 'chaqueta-cortavientos-cumbre/01-main.jpg', 'Chaqueta cortavientos Cumbre en negro', 0, true
-  where not exists (
-    select 1 from public.product_images pi
-    where pi.product_id = v_product_id
-      and pi.url = 'chaqueta-cortavientos-cumbre/01-main.jpg'
-  );
+  -- SIN IMAGEN A PROPÓSITO (incremento 10). Este bloque insertaba una fila
+  -- en product_images para un objeto que el seed NUNCA sube, así que la
+  -- ficha servía un <img> roto y og:image/JSON-LD apuntaban a un 400.
+  -- Las fotos reales se suben desde /admin/catalogo. NO lo reintroduzcas.
+  --   antes: 'chaqueta-cortavientos-cumbre/01-main.jpg' · alt: 'Chaqueta cortavientos Cumbre en negro'
 
   select id into v_color_id from public.colors where slug = 'negro';
   insert into public.product_variants (product_id, color_id, size_id, sku, price, stock)
@@ -68,13 +66,11 @@ begin
 
   select id into v_product_id from public.products where market_id = 'ES' and slug = 'camiseta-sendero-oversize';
 
-  insert into public.product_images (product_id, url, alt_text, sort_order, is_primary)
-  select v_product_id, 'camiseta-sendero-oversize/01-main.jpg', 'Camiseta Sendero Oversize en crema', 0, true
-  where not exists (
-    select 1 from public.product_images pi
-    where pi.product_id = v_product_id
-      and pi.url = 'camiseta-sendero-oversize/01-main.jpg'
-  );
+  -- SIN IMAGEN A PROPÓSITO (incremento 10). Este bloque insertaba una fila
+  -- en product_images para un objeto que el seed NUNCA sube, así que la
+  -- ficha servía un <img> roto y og:image/JSON-LD apuntaban a un 400.
+  -- Las fotos reales se suben desde /admin/catalogo. NO lo reintroduzcas.
+  --   antes: 'camiseta-sendero-oversize/01-main.jpg' · alt: 'Camiseta Sendero Oversize en crema'
 
   select id into v_color_id from public.colors where slug = 'piedra';
   insert into public.product_variants (product_id, color_id, size_id, sku, price, stock)
@@ -102,13 +98,11 @@ begin
 
   select id into v_product_id from public.products where market_id = 'ES' and slug = 'pantalon-cargo-altiplano';
 
-  insert into public.product_images (product_id, url, alt_text, sort_order, is_primary)
-  select v_product_id, 'pantalon-cargo-altiplano/01-main.jpg', 'Pantalón cargo Altiplano en verde bosque', 0, true
-  where not exists (
-    select 1 from public.product_images pi
-    where pi.product_id = v_product_id
-      and pi.url = 'pantalon-cargo-altiplano/01-main.jpg'
-  );
+  -- SIN IMAGEN A PROPÓSITO (incremento 10). Este bloque insertaba una fila
+  -- en product_images para un objeto que el seed NUNCA sube, así que la
+  -- ficha servía un <img> roto y og:image/JSON-LD apuntaban a un 400.
+  -- Las fotos reales se suben desde /admin/catalogo. NO lo reintroduzcas.
+  --   antes: 'pantalon-cargo-altiplano/01-main.jpg' · alt: 'Pantalón cargo Altiplano en verde bosque'
 
   select id into v_color_id from public.colors where slug = 'verde-bosque';
   insert into public.product_variants (product_id, color_id, size_id, sku, price, stock)
@@ -136,13 +130,11 @@ begin
 
   select id into v_product_id from public.products where market_id = 'ES' and slug = 'gorra-horizonte';
 
-  insert into public.product_images (product_id, url, alt_text, sort_order, is_primary)
-  select v_product_id, 'gorra-horizonte/01-main.jpg', 'Gorra Horizonte en negro', 0, true
-  where not exists (
-    select 1 from public.product_images pi
-    where pi.product_id = v_product_id
-      and pi.url = 'gorra-horizonte/01-main.jpg'
-  );
+  -- SIN IMAGEN A PROPÓSITO (incremento 10). Este bloque insertaba una fila
+  -- en product_images para un objeto que el seed NUNCA sube, así que la
+  -- ficha servía un <img> roto y og:image/JSON-LD apuntaban a un 400.
+  -- Las fotos reales se suben desde /admin/catalogo. NO lo reintroduzcas.
+  --   antes: 'gorra-horizonte/01-main.jpg' · alt: 'Gorra Horizonte en negro'
 
   select id into v_color_id from public.colors where slug = 'negro';
   insert into public.product_variants (product_id, color_id, size_id, sku, price, stock)

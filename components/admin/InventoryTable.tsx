@@ -3,173 +3,190 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import {
-  restockVariantsAction,
-  type RestockState,
+  saveStockAction,
+  type StockState,
 } from "@/app/admin/(panel)/inventario/actions";
-import type { InventoryRow } from "@/lib/data/admin/inventory";
-import { formatPrice } from "@/lib/money/format";
+import type { InventoryProduct, InventoryVariant } from "@/lib/data/admin/inventory";
 
 /**
- * Tabla de inventario con reposición en lote (Fase 9.5, Incremento 4).
+ * Inventario editable, agrupado por producto (Incremento 12).
  *
- * UN SOLO FORMULARIO para toda la página: el admin recorre la lista con lo
- * recibido delante, escribe las unidades donde toca y envía una vez. Esa es la
- * operación real —una recepción de mercancía es UNA operación, no N—, y además
- * es lo que permite que el lote sea atómico en PostgreSQL.
+ * LA OPERACIÓN QUE OPTIMIZA: al administrador le dicen "negra M 4, negra L 0,
+ * blanca M 7". Escribe tres números en el bloque del producto y pulsa guardar
+ * una vez. Nada de abrir la ficha, nada de sumar de cabeza.
  *
- * SE ENVÍAN DELTAS, no valores absolutos: el campo dice "+ unidades" y lo que
- * viaja es la suma. El servidor nunca recibe un stock calculado en el cliente.
+ * UN FORMULARIO POR PRODUCTO, y no uno global: el lote es atómico, así que el
+ * grupo tiene que coincidir con lo que el administrador entiende por "una
+ * operación". Si un guardado falla por conflicto, solo se rechaza ese producto.
  *
- * Funciona sin JavaScript: es un `<form>` con Server Action. `disabled` durante
- * el envío es comodidad, no protección — la garantía está en la función SQL.
+ * DOS BOTONES, UN FORMULARIO: "Guardar" y "Agotar" se distinguen por el
+ * `intent` del botón pulsado, que es comportamiento nativo de HTML. Funciona
+ * sin JavaScript; `disabled` mientras se envía es comodidad, no protección.
+ *
+ * EL `key` DE LOS CAMPOS LLEVA `updatedAt` A PROPÓSITO: tras guardar, el
+ * servidor devuelve la fila con otro `updated_at`, el input se vuelve a montar
+ * y muestra el valor nuevo. Sin eso, un input no controlado seguiría enseñando
+ * lo que había antes de pulsar Agotar.
  */
 
-const INITIAL: RestockState = { error: null, success: null };
+const INITIAL: StockState = { error: null, success: null, conflict: false };
 
-function SubmitButton({ count }: { count: number }) {
+function SaveButton() {
   const { pending } = useFormStatus();
   return (
     <button
       type="submit"
-      disabled={pending || count === 0}
-      className="inline-flex h-12 items-center rounded-full bg-red px-5 text-sm font-medium text-white transition-colors duration-200 ease-out hover:bg-red-dark disabled:cursor-not-allowed disabled:opacity-50 md:h-11"
+      name="intent"
+      value="save"
+      disabled={pending}
+      /*
+        NEGRO, no rojo: esta pantalla pinta un botón de guardar por producto, y
+        cuatro CTA rojos a la vez romperían la regla de que el rojo señala UNA
+        acción principal (CLAUDE.md #10). Aquí el rojo queda para lo que avisa:
+        el borde de una variante agotada o bajo umbral.
+      */
+      className="inline-flex h-12 items-center rounded-full bg-black px-5 text-sm font-medium text-white transition-colors duration-200 ease-out hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {/* TODO(i18n) */}
-      {pending ? "Aplicando…" : "Aplicar reposición"}
+      {pending ? "Guardando…" : "Guardar cambios"}
     </button>
   );
 }
 
-function StockCell({ row }: { row: InventoryRow }) {
-  if (row.stock === 0) {
-    return <span className="font-medium text-red">{/* TODO(i18n) */}Agotada</span>;
-  }
+function ExhaustButton({ variant }: { variant: InventoryVariant }) {
+  const { pending } = useFormStatus();
   return (
-    <span className={row.isLowStock ? "font-medium text-red" : "text-black"}>
-      {row.stock}
-      <span className="text-gray-400"> / {row.lowStockThreshold}</span>
+    <button
+      type="submit"
+      name="intent"
+      value={`exhaust:${variant.variantId}`}
+      disabled={pending || variant.stock === 0}
+      aria-label={`Agotar ${variant.sku}`}
+      className="h-12 shrink-0 rounded-full border border-black px-4 text-sm font-medium text-black transition-colors duration-200 ease-out hover:bg-black hover:text-white disabled:cursor-not-allowed disabled:border-line disabled:text-gray-400 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+    >
+      {/* TODO(i18n) */}
+      Agotar
+    </button>
+  );
+}
+
+function VariantLabel({ variant }: { variant: InventoryVariant }) {
+  const label = [variant.colorName, variant.sizeLabel].filter(Boolean).join(" · ");
+  return (
+    <span className="flex min-w-0 flex-col">
+      <span className="truncate text-sm text-black">
+        {/* TODO(i18n) */}
+        {label || "Única"}
+        {!variant.isActive ? (
+          <span className="ml-2 text-xs text-gray-400">{/* TODO(i18n) */}inactiva</span>
+        ) : null}
+      </span>
+      {/*
+        La referencia del proveedor va aquí, y solo si existe: es lo que el
+        administrador tiene delante cuando le dictan la disponibilidad, así que
+        le permite confirmar que está tocando la variante correcta sin abrir la
+        ficha. Si no hay referencia, no se pinta un hueco.
+      */}
+      <span className="truncate font-mono text-[11px] text-gray-400">
+        {variant.sku}
+        {variant.supplierRef ? (
+          <span className="text-black"> · {variant.supplierRef}</span>
+        ) : null}
+      </span>
     </span>
   );
 }
 
-export function InventoryTable({
-  rows,
-  currencyCode,
-  locale,
-}: {
-  rows: InventoryRow[];
-  currencyCode: string;
-  locale: string;
-}) {
-  const [state, formAction] = useActionState(restockVariantsAction, INITIAL);
+function ProductGroup({ product }: { product: InventoryProduct }) {
+  const [state, formAction] = useActionState(saveStockAction, INITIAL);
+  const units = product.variants.reduce((sum, v) => sum + v.stock, 0);
 
   return (
-    <form action={formAction} className="flex flex-col gap-4">
-      {/* Móvil: tarjetas. Una tabla de 6 columnas es ilegible en 375px. */}
-      <ul className="flex flex-col gap-2 md:hidden">
-        {rows.map((row) => (
+    <form
+      action={formAction}
+      className="flex flex-col gap-3 rounded-md border border-line bg-white p-4"
+    >
+      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-col">
+          <h2 className="min-w-0 text-sm font-medium text-black">{product.productName}</h2>
+          {product.supplier ? (
+            <span className="truncate text-xs text-gray-700">{product.supplier}</span>
+          ) : null}
+        </div>
+        <p className="text-xs text-gray-400">
+          {/* TODO(i18n) */}
+          {units} uds
+          {product.productStatus !== "active" ? " · no publicado" : ""}
+        </p>
+      </header>
+
+      <ul className="flex flex-col gap-2">
+        {product.variants.map((variant) => (
           <li
-            key={row.variantId}
-            className="flex flex-col gap-2 rounded-md border border-line bg-white p-4"
+            key={variant.variantId}
+            className="flex items-center gap-3 border-t border-line pt-2 first:border-t-0 first:pt-0"
           >
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="min-w-0 truncate text-sm font-medium text-black">
-                {row.productName}
-              </span>
-              <StockCell row={row} />
-            </div>
-            <p className="text-xs text-gray-700">
-              {[row.colorName, row.sizeLabel].filter(Boolean).join(" · ") || "—"}
-              <span className="text-gray-400"> · {row.sku}</span>
-            </p>
-            <label className="flex items-center gap-2 text-sm">
-              {/* TODO(i18n) */}
-              <span className="text-gray-700">Entran</span>
+            <VariantLabel variant={variant} />
+
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <label htmlFor={`stock-${variant.variantId}`} className="sr-only">
+                {/* TODO(i18n) */}
+                Unidades de {variant.sku}
+              </label>
               <input
+                // Ver cabecera: el testigo en la key repinta el valor real
+                // después de guardar o de agotar.
+                key={`${variant.variantId}-${variant.updatedAt}`}
+                id={`stock-${variant.variantId}`}
+                name={`stock:${variant.variantId}`}
                 type="text"
                 inputMode="numeric"
-                name={`delta:${row.variantId}`}
-                placeholder="+0"
-                aria-label={`Unidades que entran de ${row.sku}`}
-                className="h-11 w-24 rounded-md border border-line bg-white px-3 text-base text-black outline-none focus-visible:border-black"
+                autoComplete="off"
+                defaultValue={String(variant.stock)}
+                className={`h-12 w-20 rounded-md border bg-white px-3 text-center text-base text-black outline-none focus-visible:border-black ${
+                  variant.stock === 0 ? "border-red" : variant.isLowStock ? "border-red" : "border-line"
+                }`}
               />
-            </label>
+              <input
+                key={`ts-${variant.variantId}-${variant.updatedAt}`}
+                type="hidden"
+                name={`ts:${variant.variantId}`}
+                value={variant.updatedAt}
+              />
+              <ExhaustButton variant={variant} />
+            </div>
           </li>
         ))}
       </ul>
 
-      {/* Desktop: tabla densa. */}
-      <div className="hidden overflow-x-auto md:block">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            {/* TODO(i18n) */}
-            <tr className="border-b border-line text-left text-xs uppercase tracking-wide text-gray-700">
-              <th scope="col" className="py-2 pr-4 font-medium">Producto</th>
-              <th scope="col" className="py-2 pr-4 font-medium">Variante</th>
-              <th scope="col" className="py-2 pr-4 font-medium">SKU</th>
-              <th scope="col" className="py-2 pr-4 text-right font-medium">Precio</th>
-              <th scope="col" className="py-2 pr-4 text-right font-medium">Stock / umbral</th>
-              <th scope="col" className="py-2 text-right font-medium">Entran</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={row.variantId} className="border-b border-line">
-                <td className="max-w-[18rem] py-2.5 pr-4">
-                  <span className="block truncate text-black">{row.productName}</span>
-                  {row.productStatus !== "active" || !row.isActive ? (
-                    <span className="text-xs text-gray-400">
-                      {/* TODO(i18n) */}
-                      {row.productStatus !== "active" ? "producto no publicado" : "variante inactiva"}
-                    </span>
-                  ) : null}
-                </td>
-                <td className="py-2.5 pr-4 whitespace-nowrap text-gray-700">
-                  {[row.colorName, row.sizeLabel].filter(Boolean).join(" · ") || "—"}
-                </td>
-                <td className="py-2.5 pr-4 whitespace-nowrap font-mono text-xs text-gray-400">
-                  {row.sku}
-                </td>
-                <td className="py-2.5 pr-4 text-right whitespace-nowrap text-gray-700">
-                  {formatPrice(row.price, currencyCode, locale)}
-                </td>
-                <td className="py-2.5 pr-4 text-right whitespace-nowrap">
-                  <StockCell row={row} />
-                </td>
-                <td className="py-2.5 text-right">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    name={`delta:${row.variantId}`}
-                    placeholder="+0"
-                    aria-label={`Unidades que entran de ${row.sku}`}
-                    className="h-9 w-20 rounded-md border border-line bg-white px-2 text-right text-sm text-black outline-none focus-visible:border-black"
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SaveButton />
+        {state.error ? (
+          <p role="alert" className="w-full text-sm text-red">
+            {state.error}
+          </p>
+        ) : null}
+        {state.success ? (
+          <p role="status" className="w-full text-sm text-black">
+            {state.success}
+          </p>
+        ) : null}
       </div>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <SubmitButton count={rows.length} />
-        <p className="text-xs text-gray-400">
-          {/* TODO(i18n) */}
-          Se suman a lo que ya hay. Escribe un negativo para retirar unidades.
-        </p>
-      </div>
-
-      {state.error ? (
-        <p role="alert" className="text-sm text-red">
-          {state.error}
-        </p>
-      ) : null}
-      {state.success ? (
-        <p role="status" className="text-sm text-black">
-          {state.success}
-        </p>
-      ) : null}
     </form>
+  );
+}
+
+export function InventoryTable({ products }: { products: InventoryProduct[] }) {
+  return (
+    <div className="flex flex-col gap-3">
+      {products.map((product) => (
+        <ProductGroup key={product.productId} product={product} />
+      ))}
+      <p className="text-xs text-gray-400">
+        {/* TODO(i18n) */}
+        Escribe las unidades que hay ahora mismo y guarda. Si alguien cambia
+        algo mientras editas, no se guarda nada y te avisamos.
+      </p>
+    </div>
   );
 }

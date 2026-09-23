@@ -6,6 +6,10 @@ import { Divider } from "@/components/ui/Divider";
 import { RemoteImage } from "@/components/ui/RemoteImage";
 import { AddToCartForm } from "@/components/store/cart/AddToCartForm";
 import { getAllProductSlugs, getProductBySlug } from "@/lib/data/products";
+import { getStorefrontSettings } from "@/lib/data/settings";
+import { listShippingMethods } from "@/lib/data/shipping";
+import { summarizeShipping } from "@/lib/checkout/shipping-summary";
+import { ShippingNote } from "@/components/store/ShippingNote";
 import { getActiveMarket } from "@/lib/markets";
 import {
   breadcrumbJsonLd,
@@ -39,7 +43,13 @@ export async function generateMetadata(
 ): Promise<Metadata> {
   const { slug } = await props.params;
   const market = await getActiveMarket();
-  const product = await getProductBySlug(market, slug);
+  // El `siteName` de Open Graph sale de `settings` desde el incremento 16: era
+  // el último "YI" escrito a mano en una ficha. La consulta la comparte con el
+  // layout de `(store)` (`cache()` de React), así que no añade ninguna.
+  const [product, settings] = await Promise.all([
+    getProductBySlug(market, slug),
+    getStorefrontSettings(market),
+  ]);
 
   if (!product) {
     return { title: "Producto no encontrado", robots: { index: false, follow: false } };
@@ -52,9 +62,30 @@ export async function generateMetadata(
     product.shortDescription ??
     product.description ??
     undefined;
-  const images = product.images
+  const ownImages = product.images
     .flatMap((image) => (image.url ? [image.url] : []))
     .slice(0, 4);
+
+  /*
+    ───────────────────────────────────────────────────────────────────────
+    UNA FICHA SIN FOTO SE COMPARTÍA SIN NINGUNA IMAGEN (incremento 19)
+    ───────────────────────────────────────────────────────────────────────
+    MEDIDO sobre el build servido con el catálogo real:
+
+        <meta property="og:image"> → null
+        <meta name="twitter:card"> → "summary"
+
+    Es decir: pegar el enlace de un producto en WhatsApp, en Instagram o
+    usarlo de destino de un anuncio daba una tarjeta sin imagen — justo
+    cuando la imagen es lo único que detiene el scroll.
+
+    La foto del producto sigue siendo la mejor opción y manda cuando existe.
+    Cuando no, se cae a la PORTADA de la tienda (`app/opengraph-image.tsx`),
+    que ya lleva el logo y la frase administrables (DEC-071, DEC-074). No es
+    una imagen inventada del producto: es la marca, que es lo que la tienda
+    puede afirmar con verdad mientras no haya fotografía.
+  */
+  const ogImages = ownImages.length > 0 ? ownImages : [absoluteUrl(siteUrl, "/opengraph-image")];
 
   return {
     title: product.metaTitle ?? product.name,
@@ -65,15 +96,16 @@ export async function generateMetadata(
       url: absoluteUrl(siteUrl, canonical),
       title: product.metaTitle ?? product.name,
       description,
-      siteName: "YI",
+      ...(settings?.storeName ? { siteName: settings.storeName } : {}),
       locale: market.locale,
-      ...(images.length > 0 ? { images } : {}),
+      images: ogImages,
     },
     twitter: {
-      card: images.length > 0 ? "summary_large_image" : "summary",
+      // Siempre hay imagen grande: o la del producto, o la portada.
+      card: "summary_large_image",
       title: product.metaTitle ?? product.name,
       description,
-      ...(images.length > 0 ? { images } : {}),
+      images: ogImages,
     },
   };
 }
@@ -83,9 +115,19 @@ export default async function ProductPage(
 ) {
   const { slug } = await props.params;
   const market = await getActiveMarket();
-  const product = await getProductBySlug(market, slug);
+  /*
+    El envío se carga aquí y NO en un componente cliente: es un dato del
+    servidor, no cambia con la interacción, y así no viaja ni un byte de
+    JavaScript de más. Va en paralelo con el producto.
+  */
+  const [product, shippingMethods] = await Promise.all([
+    getProductBySlug(market, slug),
+    listShippingMethods(market),
+  ]);
 
   if (!product) notFound();
+
+  const shipping = summarizeShipping(shippingMethods);
 
   const [mainImage, ...detailImages] = product.images;
 
@@ -121,10 +163,33 @@ export default async function ProductPage(
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(breadcrumb) }}
       />
       <div className="flex flex-col gap-3">
+        {/*
+          ─────────────────────────────────────────────────────────────────
+          SIN FOTO, EL HUECO NO PUEDE OCUPAR MEDIA PANTALLA (incremento 19)
+          ─────────────────────────────────────────────────────────────────
+          MEDIDO en Chrome a 390×844 sobre el build servido, con el catálogo
+          real (que hoy no tiene fotos):
+
+              placeholder 3/4  →  520 px de alto
+              h1               →  639 px
+              precio           →  748 px
+              tallas           →  920 px
+              CTA              → 1108 px   ← 1,3 pantallas de scroll
+
+          Es decir: quien llega desde un anuncio ve un recuadro gris enorme y
+          tiene que bajar dos veces para encontrar el botón de comprar. El
+          recuadro no comunica NADA —no hay foto que enseñar—, así que se le da
+          la proporción ancha: sigue marcando dónde irá la imagen, pero sin
+          gastarse la primera pantalla.
+
+          Con foto real se mantiene el retrato 3/4, que es el formato de la
+          fotografía de producto y el que decide el LCP.
+        */}
         <RemoteImage
           src={mainImage?.url ?? null}
           alt={mainImage?.alt ?? product.name}
           blurDataURL={mainImage?.blurDataUrl ?? null}
+          ratio={mainImage?.url ? "portrait" : "wide"}
           // Única imagen above-the-fold de la ficha: la que decide el LCP
           // (09-SEO-PERFORMANCE.md §56). Ninguna otra lleva `priority`.
           priority
@@ -168,6 +233,18 @@ export default async function ProductPage(
           sigue siendo Server Component.
         */}
         <AddToCartForm product={product} />
+
+        {/*
+          EL ENVÍO, ANTES DEL CHECKOUT (incremento 19). Hasta aquí el cliente no
+          sabía cuánto costaba recibirlo hasta el último paso. Sale de
+          `shipping_methods`, igual que el checkout y que `create_order`: la
+          ficha no puede inventarse un importe ni contradecir lo que se cobra.
+        */}
+        <ShippingNote
+          summary={shipping}
+          currencyCode={product.currencyCode}
+          locale={product.locale}
+        />
 
         <Divider />
 

@@ -9,6 +9,7 @@ import { ProductCard } from "@/components/store/ProductCard";
 import { getCategories } from "@/lib/data/categories";
 import { getHomeHero } from "@/lib/data/home";
 import { getFeaturedProducts } from "@/lib/data/products";
+import { getStorefrontSettings } from "@/lib/data/settings";
 import { getActiveMarket } from "@/lib/markets";
 
 export const revalidate = 300;
@@ -17,31 +18,47 @@ export const revalidate = 300;
  * Metadata de la home (Fase 9). Canonical explícita para que los enlaces con
  * `?utm_...` o con hash no generen duplicados a ojos de Google
  * (`docs/09-SEO-PERFORMANCE.md` §1, "Sin páginas duplicadas").
+ *
+ * INCREMENTO 16: el nombre y la frase salen de `settings`, no del código.
+ * Estaban aquí cuatro veces —`siteName`, dos `title` y dos `description`— y
+ * eran parte de la razón por la que renombrar la tienda exigía desplegar.
+ *
+ * Pasar de `metadata` a `generateMetadata` NO rompe el ISR: la home sigue
+ * siendo estática con `revalidate = 300` y la consulta la comparte con el
+ * layout (`getStorefrontSettings` es `cache()`), así que no añade ninguna.
  */
-export const metadata: Metadata = {
-  alternates: { canonical: "/" },
-  openGraph: {
-    type: "website",
-    url: "/",
-    siteName: "YI",
-    title: "YI",
-    description: "Vive a tu propio ritmo.",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "YI",
-    description: "Vive a tu propio ritmo.",
-  },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const market = await getActiveMarket();
+  const settings = await getStorefrontSettings(market);
+  const description = settings?.tagline ?? undefined;
+
+  return {
+    alternates: { canonical: "/" },
+    openGraph: {
+      type: "website",
+      url: "/",
+      ...(settings?.storeName
+        ? { siteName: settings.storeName, title: settings.storeName }
+        : {}),
+      ...(description ? { description } : {}),
+    },
+    twitter: {
+      card: "summary_large_image",
+      ...(settings?.storeName ? { title: settings.storeName } : {}),
+      ...(description ? { description } : {}),
+    },
+  };
+}
 
 // TODO(i18n): strings visibles sin centralizar — lib/i18n/ no existe
 // todavía (DEC-013 resuelta, español único; módulo pendiente de crear).
 export default async function Home() {
   const market = await getActiveMarket();
-  const [hero, categories, featured] = await Promise.all([
+  const [hero, categories, featured, settings] = await Promise.all([
     getHomeHero(market),
     getCategories(market),
     getFeaturedProducts(market),
+    getStorefrontSettings(market),
   ]);
   const firstProduct = featured[0];
 
@@ -52,12 +69,23 @@ export default async function Home() {
         <span className="text-xs font-semibold uppercase tracking-[0.2em] text-gray-400">
           Streetwear · Naturaleza · Ciudad
         </span>
-        <h1 className="max-w-lg text-4xl font-bold tracking-tight text-black md:text-6xl">
-          {hero?.title ?? "YI"}
-        </h1>
-        <p className="max-w-sm text-base text-gray-700 md:text-lg">
-          {hero?.subtitle ?? "Vive a tu propio ritmo."}
-        </p>
+        {/*
+          FALLBACKS ADMINISTRABLES (incremento 16). Antes decían «YI» y «Vive a
+          tu propio ritmo.» a mano: un hero sin bloque editorial mostraba una
+          marca que el panel no podía cambiar. Ahora, sin bloque, cae en la
+          identidad de `settings`; y si tampoco hay, no se pinta nada en vez
+          de inventarse copy (regla #9).
+        */}
+        {hero?.title ?? settings?.storeName ? (
+          <h1 className="max-w-lg text-4xl font-bold tracking-tight text-black md:text-6xl">
+            {hero?.title ?? settings?.storeName}
+          </h1>
+        ) : null}
+        {hero?.subtitle ?? settings?.tagline ? (
+          <p className="max-w-sm text-base text-gray-700 md:text-lg">
+            {hero?.subtitle ?? settings?.tagline}
+          </p>
+        ) : null}
         <a href={hero?.ctaHref ?? "#destacados"}>
           <Button variant="primary">{hero?.ctaLabel ?? "Explorar"}</Button>
         </a>

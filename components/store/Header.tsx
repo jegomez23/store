@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { CartIcon, CloseIcon, MenuIcon } from "@/components/ui/icons";
 import { CartCountBadge, useCartLinkLabel } from "@/components/store/cart/CartCount";
 import { Container } from "@/components/ui/Container";
@@ -9,6 +10,20 @@ import type { CatalogCategory } from "@/lib/data/categories";
 
 interface HeaderProps {
   categories: CatalogCategory[];
+  /**
+   * Nombre de la tienda desde `settings` (incremento 16). Antes aquí ponía
+   * «YI» a mano, así que renombrar la tienda en /admin/ajustes no cambiaba el
+   * logo. `null` solo puede pasar si el mercado no tiene fila de `settings`:
+   * entonces el enlace sigue existiendo como navegación —«Inicio»— en vez de
+   * inventarse una marca.
+   */
+  storeName: string | null;
+  /**
+   * URL pública del logo (incremento 17), ya resuelta por el data layer.
+   * `null` = la tienda no tiene logo y se pinta el nombre escrito, que es
+   * exactamente lo que había antes. Subirlo NO es obligatorio.
+   */
+  logoUrl: string | null;
 }
 
 /**
@@ -16,7 +31,7 @@ interface HeaderProps {
  * desktop. Desde Fase 5 el icono de carrito enlaza a /carrito y muestra el
  * número de unidades.
  */
-export function Header({ categories }: HeaderProps) {
+export function Header({ categories, storeName, logoUrl }: HeaderProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const cartLabel = useCartLinkLabel();
 
@@ -42,11 +57,36 @@ export function Header({ categories }: HeaderProps) {
           {isMenuOpen ? <CloseIcon /> : <MenuIcon />}
         </button>
 
-        <Link
-          href="/"
-          className="text-xl font-bold tracking-tight text-black md:text-2xl"
-        >
-          YI
+        {/*
+          LOGO O NOMBRE, NUNCA LOS DOS (incremento 17).
+
+          Con logo, el nombre viaja en el `alt`: repetirlo al lado haría que un
+          lector de pantalla anunciara la marca dos veces, y en 390 px robaría
+          el sitio del carrito.
+
+          Caja de tamaño FIJO con `fill` + `object-contain`: el logo lo sube el
+          administrador y no sabemos su proporción. Reservar el hueco evita que
+          la cabecera dé un salto al cargar la imagen, que es CLS justo en lo
+          primero que se ve. `sizes` acota lo que `next/image` genera; el objeto
+          ya llega recortado a 512 px de lado por `lib/storage/logo.ts`.
+        */}
+        <Link href="/" className="flex items-center" aria-label={storeName ?? "Inicio"}>
+          {logoUrl ? (
+            <span className="relative block h-8 w-28 md:h-9 md:w-36">
+              <Image
+                src={logoUrl}
+                alt={storeName ?? "Inicio"}
+                fill
+                sizes="144px"
+                className="object-contain object-left"
+                priority
+              />
+            </span>
+          ) : (
+            <span className="text-xl font-bold tracking-tight text-black md:text-2xl">
+              {storeName ?? "Inicio"}
+            </span>
+          )}
         </Link>
 
         <nav

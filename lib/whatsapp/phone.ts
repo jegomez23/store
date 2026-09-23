@@ -50,3 +50,48 @@ export function buildWhatsAppUrl(
   // (docs/06-WHATSAPP.md §2 "Reglas de generación").
   return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
 }
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────
+ * "CONFIGURADO" NO ES LO MISMO QUE "VÁLIDO" (incremento 10)
+ * ─────────────────────────────────────────────────────────────────────────
+ *
+ * `normalizePhone('34600000000')` devuelve `'34600000000'`: son 11 dígitos y
+ * pasa todas las comprobaciones de forma. Y sin embargo ese número es el
+ * PLACEHOLDER que siembra `supabase/seed/05_settings_and_shipping_es.sql`, un
+ * archivo que dice de sí mismo: «whatsapp_number es un número de prueba, NO
+ * real».
+ *
+ * Consecuencia medida antes de escribir esto: el checkout creaba el pedido y
+ * mandaba al cliente a `wa.me/34600000000`. El cliente creía haber escrito a
+ * la tienda, el pedido quedaba `pending` y **nadie se enteraba**.
+ *
+ * ⚠️ AQUÍ NO SE INVENTA NINGUNA REGLA DE NEGOCIO. No se intenta adivinar qué
+ * números "parecen falsos": la lista contiene EXACTAMENTE los valores que el
+ * propio repositorio siembra como marcador de posición, ni uno más. Un número
+ * real que empiece por 600 es perfectamente válido y debe seguir siéndolo.
+ *
+ * El test `phone.test.ts` lee el archivo de seed y falla si el valor sembrado
+ * deja de estar en esta lista: una sola fuente de verdad, como
+ * `ACTION_BODY_LIMIT_BYTES` en `next.config.ts`.
+ */
+export const PLACEHOLDER_WHATSAPP_NUMBERS: readonly string[] = ["34600000000"];
+
+/** ¿Es el número que el seed pone para que la tienda arranque? */
+export function isPlaceholderWhatsAppNumber(
+  value: string | null | undefined,
+): boolean {
+  const normalized = normalizePhone(value);
+  return normalized !== null && PLACEHOLDER_WHATSAPP_NUMBERS.includes(normalized);
+}
+
+/**
+ * ÚNICO predicado de «la tienda puede vender por WhatsApp».
+ *
+ * Lo usan el checkout (para no crear un pedido que nadie va a recibir) y el
+ * panel (para avisar). Que sea uno solo es lo que impide que la tienda diga
+ * en el panel que está lista mientras el checkout piensa lo contrario.
+ */
+export function isWhatsAppConfigured(value: string | null | undefined): boolean {
+  return normalizePhone(value) !== null && !isPlaceholderWhatsAppNumber(value);
+}

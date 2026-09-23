@@ -65,7 +65,34 @@ export function AddToCartForm({ product }: AddToCartFormProps) {
     );
   }, [product.variants, requiresColor, requiresSize, selectedColor, selectedSize]);
 
-  const isOutOfStock = selectedVariant !== null && selectedVariant.stock <= 0;
+  /*
+    ─────────────────────────────────────────────────────────────────────────
+    PRODUCTO ENTERO AGOTADO (incremento 19) — FALLO MEDIDO, NO PRECAUCIÓN
+    ─────────────────────────────────────────────────────────────────────────
+    Antes, "agotado" solo se sabía DESPUÉS de elegir una variante:
+    `isOutOfStock` exigía `selectedVariant !== null`. Con todas las tallas a 0
+    y ninguna seleccionada, la ficha quedaba así (medido en Chrome a 390 px,
+    con el stock puesto a cero desde el panel para que la invalidación fuese
+    real):
+
+        tallas  → S(off) M(off) L(off)   ← ninguna se puede pulsar
+        botones → «COMPRAR POR WHATSAPP» y «Añadir al carrito» HABILITADOS
+        texto   → en ningún sitio pone "agotado"
+        JSON-LD → OutOfStock (esto sí era correcto)
+
+    Es decir: un callejón sin salida. El cliente pulsa comprar, se le pide que
+    elija una talla, y no hay ninguna que pueda elegir. Es el peor final
+    posible para un clic que se ha pagado en un anuncio.
+
+    Ahora la disponibilidad del PRODUCTO se calcula antes de elegir nada.
+  */
+  const productHasStock = useMemo(
+    () => product.variants.some((variant) => variant.stock > 0),
+    [product.variants],
+  );
+
+  const isOutOfStock =
+    !productHasStock || (selectedVariant !== null && selectedVariant.stock <= 0);
   const maxQuantity = selectedVariant
     ? maxQuantityFor({ stockSnapshot: selectedVariant.stock })
     : 1;
@@ -145,6 +172,22 @@ export function AddToCartForm({ product }: AddToCartFormProps) {
         ) : null}
       </div>
 
+      {/*
+        AGOTADO SE DICE, NO SE DEDUCE (incremento 19). Va aquí, pegado al
+        precio, porque es lo que decide si merece la pena seguir leyendo. Sin
+        esto, la única pista eran unas tallas tachadas que no se pueden pulsar.
+      */}
+      {!productHasStock ? (
+        <p
+          role="status"
+          className="rounded-md border border-line bg-cream px-4 py-3 text-sm text-black"
+        >
+          {/* TODO(i18n) */}
+          <strong>Agotado por ahora.</strong> No queda ninguna talla disponible
+          de este producto.
+        </p>
+      ) : null}
+
       <VariantPicker
         variants={product.variants}
         selectedColor={selectedColor}
@@ -162,7 +205,7 @@ export function AddToCartForm({ product }: AddToCartFormProps) {
         sizeError={showValidation && missingSize ? "Elige una talla para continuar." : null}
       />
 
-      <div className="flex flex-col gap-2">
+      <div className={`flex flex-col gap-2 ${productHasStock ? "" : "hidden"}`}>
         <span className="text-sm font-medium text-black">Cantidad</span>
         <QuantityStepper
           value={effectiveQuantity}
@@ -200,7 +243,7 @@ export function AddToCartForm({ product }: AddToCartFormProps) {
           Añadir al carrito
         </Button>
 
-        {showValidation && (missingSize || missingColor) ? (
+        {showValidation && productHasStock && (missingSize || missingColor) ? (
           <p role="alert" className="text-sm font-medium text-red">
             {/* TODO(i18n) */}
             {missingColor && missingSize

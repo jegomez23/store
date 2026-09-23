@@ -30,6 +30,7 @@ function order(overrides: Partial<TrustedOrder> = {}): TrustedOrder {
     subtotal: 34.9,
     discountTotal: 0,
     shippingTotal: 0,
+    shippingMethodName: null,
     total: 34.9,
     reused: false,
     items: [
@@ -198,5 +199,68 @@ describe("el mensaje solo contiene datos confiables", () => {
     const message = buildOrderMessage(order(), ES);
     assert.equal(typeof message, "string");
     assert.equal(decodeURIComponent(encodeURIComponent(message)), message);
+  });
+});
+
+describe("envío en el mensaje (incremento 8)", () => {
+  test("nombra el método y su importe con los valores DEL PEDIDO", () => {
+    const message = plain(
+      buildOrderMessage(
+        order({
+          subtotal: 30,
+          shippingTotal: 4.9,
+          shippingMethodName: "Envío a Península",
+          total: 34.9,
+        }),
+          ES,
+        ),
+    );
+    assert.ok(message.includes("Envío (Envío a Península): 4,90 €"), message);
+    assert.ok(message.includes("Total: 34,90 €"), message);
+  });
+
+  test("un envío GRATIS también se dice, no se calla", () => {
+    // Callarlo dejaría al cliente sin saber si el envío está incluido o
+    // pendiente de acordar — que es exactamente lo que pasaba antes.
+    const message = plain(
+      buildOrderMessage(
+        order({
+          subtotal: 89.9,
+          shippingTotal: 0,
+          shippingMethodName: "Recogida en tienda",
+          total: 89.9,
+        }),
+          ES,
+        ),
+    );
+    assert.ok(message.includes("Envío (Recogida en tienda): 0,00 €"), message);
+  });
+
+  test("un pedido anterior al incremento (sin método) no inventa una línea", () => {
+    const message = plain(
+      buildOrderMessage(
+        order({ subtotal: 34.9, shippingTotal: 0, shippingMethodName: null, total: 34.9 }),
+          ES,
+        ),
+    );
+    assert.ok(!message.includes("Envío"), message);
+  });
+
+  test("el mensaje NO recalcula: imprime lo que trae el pedido", () => {
+    // Se le pasa un total deliberadamente incoherente con las líneas. El
+    // mensaje debe repetir el del pedido, porque la autoridad es la BD; si
+    // sumara por su cuenta, podría contradecir lo registrado.
+    const message = plain(
+      buildOrderMessage(
+        order({
+          subtotal: 30,
+          shippingTotal: 4.9,
+          shippingMethodName: "Envío a Península",
+          total: 99.99,
+        }),
+          ES,
+        ),
+    );
+    assert.ok(message.includes("Total: 99,99 €"), message);
   });
 });

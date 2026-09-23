@@ -75,22 +75,14 @@ export function VariantMatrix({
           </p>
         </div>
 
+        {/*
+          La fila recibe la variante TAL CUAL la trae el data layer: copiar
+          campo a campo obligaba a acordarse de añadir cada columna nueva aquí
+          —`supplierRef` se quedó fuera hasta que TypeScript lo dijo— y no
+          protegía de nada, porque el tipo es el mismo.
+        */}
         {product.variants.map((variant) => (
-          <VariantRow
-            key={variant.id}
-            variant={{
-              id: variant.id,
-              sku: variant.sku,
-              colorName: variant.colorName,
-              sizeLabel: variant.sizeLabel,
-              price: variant.price,
-              stock: variant.stock,
-              lowStockThreshold: variant.lowStockThreshold,
-              isActive: variant.isActive,
-              updatedAt: variant.updatedAt,
-            }}
-            currencyCode={currencyCode}
-          />
+          <VariantRow key={variant.id} variant={variant} currencyCode={currencyCode} />
         ))}
       </section>
 

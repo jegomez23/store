@@ -1108,7 +1108,9 @@ Reproducido antes de tocar nada, con tres productos de prueba y el build servido
 | Reposición | `admin_restock_variants` | Sí |
 | Corrección absoluta | `updateVariantAction` | Sí |
 
-**Decision:** `admin_change_log` (migración 0032) registra únicamente `products.status`, `products.deleted_at`, `product_variants.price` y `product_variants.stock`, y solo cuando el cambio es una decisión de una persona identificada. El discriminante es `auth.uid()`: en el checkout es NULL, así que la venta no entra sin necesidad de ninguna marca. La cancelación se excluye por `request.path`.
+**Decision:** `admin_change_log` (migración 0032) registra únicamente `products.status`, `products.deleted_at`, `product_variants.price` y `product_variants.stock`, y solo cuando el cambio es una decisión de una persona identificada.
+
+> ⚠️ **Corregido por DEC-059 (migración 0033).** La 0032 usaba `auth.uid() is not null` como discriminante, dando por hecho que la venta llega siempre sin actor porque el checkout usa el cliente anónimo. Eso era una garantía de la APLICACIÓN, no de la base de datos, y **se reprodujo rompiéndola**. El discriminante correcto es `is_admin()`, y `create_order` se excluye explícitamente igual que la cancelación.
 
 **Alternatives:** (a) Registrar todo cambio de stock, convirtiendo la tabla en un libro mayor: duplicaría `order_events` y crecería con cada venta. (b) No auditar nada: hoy un precio a 9 € en vez de 90 € es indetectable a posteriori, porque `updated_at` se mueve con cualquier edición y no dice quién.
 
@@ -1146,6 +1148,8 @@ Reproducido antes de tocar nada, con tres productos de prueba y el build servido
 
 **Decision:** El trigger lee `current_setting('request.path', true)`, que PostgREST fija por petición: `/rpc/admin_restock_variants` → `reposicion`, `/product_variants` → `correccion`, y `directo` cuando el ajuste no existe (una sesión SQL). **Ninguna función tiene que acordarse de marcar nada.**
 
+`request.path` no es un dato del cliente: es la ruta que PostgREST **ya usó para elegir qué ejecutar**. Nadie puede hacer un PATCH sobre `/product_variants` fingiendo que la ruta dice `/rpc/create_order`, porque entonces se habría ejecutado `create_order`. Por eso sirve también para EXCLUIR (DEC-059) y no solo para etiquetar.
+
 **Alternatives:** Un `set_config` en cada RPC. Funciona, pero mete en cada función la obligación de recordarlo, que es justo lo que esta fase quiere evitar.
 
 **Reason:** El origen ya viaja en la petición; pedírselo al código sería duplicar información que el servidor ya tiene.
@@ -1177,6 +1181,123 @@ Además, `is distinct from` en vez de `<>`: con `<>`, `deleted_at` NULL → fech
 
 ---
 
+## DEC-059 — "Hay sesión" no es "hay un administrador": la venta no es una decisión
+
+**Status:** Accepted *(Fase 9.5, Incremento 5C, migración 0033, 2026-09-05)*
+
+**Context:** Auditoría de la 0032 contra el proyecto real, no lectura del código. Su puerta era `if v_actor is null then return null`, y su única exclusión de operaciones de pedido, la ruta `/rpc/admin_update_order_status`. Dos consecuencias, ambas **reproducidas**:
+
+1. `create_order` tiene `grant execute` a `authenticated` desde la 0018. Llamada con el token de un admin devuelve **200** y deja `field_name=stock, 10 → 8, source=rpc`, que la ficha pinta como «Stock corregido: 10 → 8». Una venta disfrazada de decisión de una persona.
+2. Peor: `actor_id` referencia `profiles`, y un autenticado **sin perfil** no tiene fila ahí. Medido: `409 · 23503 · Key (actor_id)=(505b0e18…) is not present in table "profiles"`. El INSERT de auditoría revienta dentro de `create_order`, la transacción se deshace entera y **el pedido no se crea** (el stock se quedó en 10). La auditoría podía **denegar una venta**.
+
+Que hoy no sea alcanzable desde la tienda —`lib/checkout/create-order.ts` usa el cliente anónimo— no lo convierte en teórico: es alcanzable por un POST directo de cualquier autenticado, y dejaría de estar contenido el día que existan cuentas de cliente.
+
+**Decision:** La puerta del trigger pasa a ser `if not public.is_admin() then return null`. Y las **dos** funciones que mueven stock por causa de un pedido se excluyen por ruta: `create_order` y `admin_update_order_status`. Se comprobó que son las únicas: en todo el esquema solo tres funciones escriben en `product_variants` (`create_order` 0018, `admin_update_order_status` 0019, `admin_restock_variants` 0026); el resto llega como PATCH del panel.
+
+**Alternatives:** (a) Marcar el origen con `set_config(..., true)` dentro de `create_order`. Más robusto en abstracto, pero obliga a reescribir en la 0033 las ~300 líneas de la función de checkout para añadir una: dos copias del cobro en el historial de migraciones a cambio de nada, porque la ruta ya es un dato fiable del servidor (DEC-057). (b) Quitar la FK de `actor_id`. Se descarta: la FK es precisamente lo que garantiza que el autor existe; el problema era la puerta, no la restricción.
+
+**Reason:** Esta tabla registra **decisiones de administradores**. `is_admin()` dice exactamente eso, `auth.uid() is not null` dice "hay alguien". Además hace la clave ajena **inalcanzable por construcción**: si el trigger escribe, el actor tiene perfil.
+
+**Consequences:** Verificado contra el proyecto real, después de la 0033:
+
+- Compra con la sesión de un admin → **cero** filas de auditoría, con control positivo de que el stock sí bajó (10 → 8), o sea que el trigger corrió.
+- Compra de un autenticado sin perfil → **200**, pedido creado, stock cobrado. La auditoría ya no puede impedir una venta.
+- La cadena de la service role key sigue fuera: su JWT no lleva `sub`, así que `is_admin()` es falso.
+
+**Falla hacia el lado seguro:** una función futura que mueva stock y que nadie añada a la lista se registra como `source='rpc'` —ruido visible en la ficha— en vez de perderse.
+
+---
+
+## DEC-060 — El historial hereda del producto quién puede leerlo
+
+**Status:** Accepted *(Fase 9.5, Incremento 5C, migración 0033, 2026-09-05)*
+
+**Context:** `admin_change_log` era la **única** tabla legible por el admin cuya policy decía solo `is_admin()`. Todas las demás derivan el mercado del producto con un `exists` desde DEC-035 (migración 0020), incluidas `product_variants` y `product_images`, que tampoco tienen `market_id` propio.
+
+Reproducido: con un producto de un mercado desactivado, el admin recibe `[]` al pedir el producto y **sí lee su historial completo** —sku, precio anterior y precio nuevo—. El catálogo de un mercado apagado seguía contando lo que se cobraba en él.
+
+**Decision:** La policy de SELECT pasa a `is_admin() and exists (select 1 from products p where p.id = admin_change_log.product_id and is_active_market(p.market_id))`. Misma forma exacta que `admin_all_product_variants`.
+
+**Alternatives:** Guardar `market_id` en la tabla de auditoría. Se descarta: serían dos copias del mismo hecho que pueden divergir, y la defensa fuerte que pide el enunciado es precisamente **la relación que ya existe**, no una columna denormalizada.
+
+**Reason:** Un historial no puede sobrevivir al aislamiento del catálogo que describe.
+
+**Consequences:** Verificado contra el proyecto real con un mercado ficticio creado y borrado en el propio test: con el mercado activo el admin escribe y lee (control positivo, 1 fila); apagado, el producto devuelve `[]` **y el historial también**, mientras la fila **sigue existiendo** en la tabla —se esconde, no se borra—, así que reactivar el mercado devuelve la trazabilidad entera.
+
+Sigue sin haber policy de INSERT, UPDATE ni DELETE (DEC-056): la 0033 solo sustituye la de SELECT.
+
+---
+
+## DEC-061 — Retirar un atributo es una regla de PostgreSQL, no un filtro de la interfaz
+
+**Status:** Accepted *(Fase 9.5, incremento 6, migración 0034, 2026-09-08)*
+
+**Context:** Hasta ahora nadie podía desactivar un color sin SQL, así que daba igual que `admin_create_variant_matrix` (0021) comprobara solo que el color y la talla **existieran**. Con `/admin/atributos`, "retirar un color" pasa a ser una operación normal, y entonces la garantía importa. Reproducido antes de tocar nada, con un color y una talla creados ya con `is_active = false`:
+
+```
+POST /rest/v1/rpc/admin_create_variant_matrix  →  {"created":1,"requested":1}
+PATCH /product_variants {"color_id": <inactivo>} →  204
+```
+
+Es decir: "un valor retirado no se ofrece" lo garantizaba **solo** el `.eq("is_active", true)` de `listColors()`. Eso es la aplicación, y un POST directo se la salta.
+
+**Decision:** La 0034 añade `and is_active` a las dos comprobaciones de existencia de la RPC. **Solo se comprueba al CREAR.** No hay CHECK ni trigger sobre `product_variants`.
+
+**Alternatives:** Un CHECK o un trigger sobre `product_variants` que exigiera atributos activos en toda la fila. Se descarta por una razón concreta y ya vivida: congelaría las variantes existentes —retirar un color impediría corregir su precio o su stock—, que es exactamente el error que la 0030 cometió con la publicabilidad y que la 0031 tuvo que corregir. La restricción va en la TRANSICIÓN, no en la fila.
+
+**Reason:** La interfaz puede ocultar una opción; solo PostgreSQL puede impedirla.
+
+**Consequences:** Verificado contra el proyecto real después de la 0034: la RPC devuelve `INVALID_COLOR` / `INVALID_SIZE` con un valor retirado, y con el valor activo la misma llamada crea la variante (control positivo). Una variante que YA usa un color retirado **se sigue pudiendo editar** (probado con un PATCH de precio y stock). El PATCH directo de `color_id` a un valor retirado sigue siendo posible: es un camino que ninguna Server Action usa —`updateVariantAction` no toca `color_id` ni `size_id` a propósito— y queda como riesgo residual documentado, no tapado.
+
+---
+
+## DEC-062 — Colores y tallas son GLOBALES, y el código no debe fingir lo contrario
+
+**Status:** Accepted *(Fase 9.5, incremento 6, 2026-09-08)*
+
+**Context:** Todo el panel resuelve `market_id` en el servidor y nunca lo acepta del formulario (DEC-035). Al construir `/admin/atributos` la pregunta obvia era qué mercado usar. Verificado contra el OpenAPI del proyecto real: **`colors` y `sizes` no tienen columna `market_id`**, y la 0004 las declara catálogos compartidos entre mercados.
+
+**Decision:** `atributos/actions.ts` **no llama a `getActiveMarket()`**, y sus policies siguen siendo `is_admin()` sin `is_active_market`. No se añade aislamiento de mercado a un modelo que no lo tiene.
+
+**Alternatives:** Añadir `market_id` a ambas tablas "por coherencia" con el resto del panel. Se descarta: sería inventar una dimensión que el dominio no pide, obligaría a migrar y duplicaría los mismos once valores de talla en cada mercado.
+
+**Reason:** Copiar una defensa donde no hay nada que defender no es seguridad, es ruido — y ruido que después alguien tiene que mantener.
+
+**Consequences:** Hay un test de integración que **afirma** que `market_id` no existe en ninguna de las dos y que `sizes` no tiene `slug`. Si algún día se añaden, ese test falla y obliga a revisar esta decisión en vez de descubrirla por accidente.
+
+**Future reconsideration:** Si un mercado necesitara alguna vez su propia paleta, esto se replantea entero; hoy no hay ningún indicio de que haga falta.
+
+---
+
+## DEC-063 — El envío se calcula en el checkout, no se acuerda por WhatsApp
+
+**Status:** Accepted *(Incremento 8, migración 0035, 2026-09-08)* — **revierte la regla de v1**
+
+**Context:** Hasta aquí, `01-PRODUCT.md` §Envío y `DOMAIN-MODEL.md` §ShippingMethod decían: *"en v1 el coste final se confirma en la conversación de WhatsApp"*, y `create_order` lo citaba en un comentario mientras escribía `shipping_total = 0` y `total = subtotal` **siempre**. A la vez, `shipping_methods` tenía dos métodos activos con precio real y —esto no lo había visto ninguna auditoría anterior— **`free_shipping_threshold = 60` sin aplicar**: un pedido de 89,90 € pagaba 4,90 € de envío que los propios datos de la tienda decían que no debía pagar.
+
+**Decision:** El cliente elige método antes de confirmar; el importe que ve es el que queda registrado y el que se manda por WhatsApp. La autoridad es `create_order`, que resuelve el método contra `shipping_methods` **del mercado del pedido**, aplica su umbral y calcula el total dentro de la misma transacción. El navegador solo envía un `shipping_method_id`.
+
+Reglas concretas, todas confirmadas por Juan y ninguna inventada:
+- **Gratis cuando el SUBTOTAL de productos alcanza el umbral** (`>=`). Contra el subtotal y no contra el total porque el total incluye el envío: compararlo consigo mismo no tiene definición coherente. `free_shipping_threshold` NULL = sin umbral.
+- **Ningún método viene preseleccionado**: nadie confirma un envío que no ha elegido.
+- **Nada específico de un país en el código**: ni precios, ni umbrales, ni nombres. Todo sale de `shipping_methods` filtrado por mercado, así que activar otro mercado y sembrar sus métodos no requiere tocar una línea.
+
+**Alternatives:** (a) Dejarlo como estaba: el cliente ve un total que no incluye el envío y el pedido registra un importe que nadie va a cobrar. (b) Calcular el total en TypeScript: sería una segunda autoridad que puede divergir de la BD.
+
+**Reason:** El importe que ve el cliente antes de confirmar tiene que ser el que queda registrado. Cualquier otra cosa obliga a renegociar por chat cada pedido.
+
+**Consequences:** Verificado contra Supabase real y sobre el build servido: 30,00 + 4,90 = 34,90; recogida 30,00 + 0,00 = 30,00; en el umbral exacto (60,00) el envío sale gratis; inyectar `shipping_total`/`total` en el POST se rechaza de plano —esos parámetros no existen en la función—; un método inexistente, retirado o de otro mercado devuelve `INVALID_SHIPPING_METHOD`; y un doble envío simultáneo deja **un** pedido con **un** cobro.
+
+**La firma de 6 parámetros de `create_order` se ELIMINA.** Dejarla viva habría sido dejar publicado un camino que sigue creando pedidos con `shipping_total = 0`.
+
+**El método entra en el fingerprint de idempotencia** (DEC-028): sin eso, reintentar con la misma clave y otro envío habría devuelto el pedido viejo con el total viejo. Ahora es `IDEMPOTENCY_KEY_REUSED`.
+
+**Duplicación asumida, con vigilancia:** la regla vive en `resolveShippingCost` (previsión del cliente) y en el `case` de la 0035 (autoridad). Un test de integración ejecuta las dos sobre los mismos casos y falla si difieren en un céntimo.
+
+**Future reconsideration:** No hay zonas, ni peso, ni dirección: el sistema no captura dirección en el checkout (DEC-049). Un cliente fuera de la península puede elegir «Envío a Península» y pagar 4,90 €. Si eso importa comercialmente, hace falta capturar dirección primero, y eso es otra decisión.
+
+---
+
 ## Decisiones abiertas (resumen para revisión humana)
 
 | ID | Tema | Quién decide |
@@ -1184,3 +1305,504 @@ Además, `is distinct from` en vez de `<>`: con `<>`, `deleted_at` NULL → fech
 | — | Pasarela de pago futura (Stripe recomendado para ES; evaluar Wompi/MercadoPago para CO) | Juan (Fase 11) |
 | — | Dominios definitivos por mercado | Juan (antes de Fase 11) |
 | ~~—~~ | ~~Formato definitivo de `order_number`~~ | ✅ Resuelto en DEC-027 (`YI-ES-000001`) |
+---
+
+## DEC-064 — Los métodos de entrega se editan en el panel, y sus límites los impone PostgreSQL
+
+**Status:** Accepted *(Incremento 9, migración 0036, 2026-09-08)*
+
+**Context:** DEC-063 convirtió `shipping_methods` en la tabla que decide **lo que cobra la tienda**: `create_order` lee de ahí el precio y el umbral y los mete en el total. Pero no había ninguna forma de editarla salvo SQL a mano. Auditando la tabla contra Supabase real apareció además que la única defensa era `price >= 0`: la BD aceptaba `free_shipping_threshold = -50` (201), `name = ''` (201) y dos métodos con el mismo nombre (201). Un umbral negativo hace que `subtotal >= -50` sea siempre cierto, es decir, **envío gratis para todos los pedidos**, sin ningún aviso.
+
+**Decision:** CRUD completo dentro de `/admin/ajustes` —no en una pantalla nueva: son configuración del mercado, como el número de WhatsApp— con tres Server Actions (`create`/`update`/`delete`) sobre el cliente de sesión, `requireAdmin()` y RLS, nunca `service_role`. Y **la migración 0036 sube los límites a la BD**, porque la validación del formulario no protege a quien escriba por SQL:
+
+```sql
+check (free_shipping_threshold is null or free_shipping_threshold >= 0)
+check (btrim(name) <> '')
+unique index on (market_id, name)
+```
+
+Reglas concretas:
+- **`market_id` NUNCA sale del formulario**: lo pone el servidor con `getActiveMarket()`. Inyectarlo en el POST no mueve nada de mercado (verificado sobre el build servido), y RLS solo deja escribir en mercados activos (DEC-035).
+- **Umbral VACÍO = NULL = «nunca sale gratis». Umbral `0` = «gratis siempre».** `Number("")` vale 0, así que tratar el vacío como número regalaría el envío de toda la tienda. Los dos casos se aceptan a propósito y son distintos.
+- **Se acepta la coma decimal**: quien administra la tienda escribe `4,90`.
+- **Retirar ≠ borrar.** Desmarcar «Ofrecer en el checkout» es la operación normal. Borrar también se permite: la FK es `on delete set null` y el pedido guarda `shipping_method_name`, `shipping_total` y `total` como **snapshot**, así que un pedido histórico no pierde ni el nombre del método ni el importe cobrado (verificado: tras borrar el método el pedido conserva los tres). La fila avisa de cuántos pedidos lo usan antes de ofrecer el botón.
+- **La fila enseña precio y umbral sin abrir nada.** Esconder detrás de un desplegable el dato que decide lo que cobra la tienda es lo que hizo que `free_shipping_threshold = 60` llevara meses sin aplicarse.
+- **No se revalida el escaparate.** `/checkout` es `force-dynamic` desde DEC-063: lee los métodos en cada petición. Añadir `revalidatePath` sería ruido que sugiere una dependencia que no existe (verificado: retirar un método desaparece del checkout sin redeploy).
+
+**Alternatives:** (a) Validar solo en el formulario: deja la BD abierta a cualquier otro camino de escritura, y el umbral negativo es un fallo silencioso que se cobra en dinero. (b) Prohibir el borrado: innecesario, porque el pedido no depende de la fila para reconstruir lo que cobró. (c) Pantalla propia `/admin/envios`: más navegación para dos o tres filas por mercado.
+
+**Reason:** La tabla que decide el dinero tiene que ser editable sin SQL y tiene que ser imposible de dejar en un estado que regale el envío.
+
+**Consequences:** 24/24 en E2E sobre el build servido y 17/17 de integración contra Supabase real. La BD ahora responde `23514` a un umbral negativo y a un nombre en blanco, y `23505` a un nombre repetido dentro del mercado; los tres se traducen a un mensaje en castellano. Las dos filas del seed pasan las tres restricciones sin tocarlas. La pantalla avisa en rojo cuando no hay ningún método o cuando ninguno está activo, porque en ambos casos **nadie puede completar un pedido**.
+
+---
+
+## DEC-065 — Un número de WhatsApp que es el del seed significa «sin configurar», y la tienda no vende
+
+**Status:** Accepted *(Incremento 10, 2026-09-09)*
+
+**Context:** `settings.whatsapp_number` valía `34600000000`, el valor que siembra `05_settings_and_shipping_es.sql`, un archivo que dice de sí mismo: *«whatsapp_number es un número de prueba, NO real»*. El guard del canal era `buildWhatsAppUrl(numero, "test") !== null`, y ese número **pasa**: tiene 11 dígitos y forma válida. Medido sobre el build servido: el checkout **creaba el pedido** y redirigía a `wa.me/34600000000`. El cliente creía haber escrito a la tienda, el pedido quedaba `pending` y **nadie se enteraba**. No era una tienda a medio configurar: era una tienda que perdía pedidos en silencio.
+
+**Decision:** Se separa «número válido» de «tienda configurada». `isWhatsAppConfigured()` es el único predicado de «la tienda puede vender por WhatsApp» y lo usan a la vez el canal de checkout y el panel, para que no puedan discrepar. Mientras el número sea el del seed:
+- **el checkout rechaza la compra** con `CHECKOUT_NOT_CONFIGURED` y **no crea ningún pedido** (decisión de Juan: más vale no vender que registrar un pedido que no llega a nadie);
+- **el panel de inicio lo dice en rojo** y enlaza a `/admin/ajustes`, y ajustes lo repite junto al campo que lo arregla;
+- **guardar ese número se rechaza**, porque guardarlo es guardar «sin configurar».
+
+⚠️ **No se inventa ninguna regla sobre qué números «parecen falsos».** `PLACEHOLDER_WHATSAPP_NUMBERS` contiene exactamente el valor que siembra el repositorio, ni uno más: `34600000001` es válido y debe seguir siéndolo. Un test lee el archivo de seed y falla si el valor sembrado deja de estar en la lista — misma técnica que `ACTION_BODY_LIMIT_BYTES` en `next.config.ts`.
+
+**Alternatives:** (a) Vender igual y avisar solo en el panel: el cliente sigue creyendo que ha avisado a alguien. (b) Adivinar números falsos por su forma (`6000000…`): rompería números reales e inventaría una regla de negocio que nadie ha tomado. (c) Dejarlo como estaba: es el estado que hacía perder pedidos.
+
+**Reason:** Un pedido que no le llega a nadie es peor que una venta no realizada: el cliente cree que ha comprado.
+
+**Consequences:** Verificado sobre el build servido invocando la Server Action del checkout: con el placeholder el pedido **no se crea** (recuento antes y después idéntico) y el mensaje al cliente no filtra el número; con un número real el pedido **sí** se crea, el recuento sube exactamente 1 y el enlace usa `wa.me/34600112233` — el control positivo es lo que demuestra que el rechazo lo causa el número y no un payload mal formado. **Mientras Juan no escriba su número, la tienda no vende. Es el efecto buscado.**
+
+---
+
+## DEC-066 — Una fila de imagen cuyo objeto no existe se borra, y un detector impide que vuelva
+
+**Status:** Accepted *(Incremento 10, migración 0037, 2026-09-09)*
+
+**Context:** El seed insertaba una fila en `product_images` por producto y **nunca subía el objeto**: los buckets estaban vacíos. Medido: `GET /storage/v1/object/public/products/<las 4>` → **400**, y `/_next/image` → **400 «upstream response is invalid»**. Tres consecuencias, ninguna hipotética: el HTML servido llevaba un `<img>` roto (el fallback a `MockImage` vive en `onError`, que es de cliente y solo actúa tras hidratar); `og:image` y el `image` del JSON-LD `Product` servían esa misma URL de 400; y el detector de publicados sin foto (P2) informaba de que los cuatro productos **tenían** foto, porque la FILA existía. Cierto e inútil.
+
+**Decision:** La migración 0037 (a) borra las filas cuyo objeto no existe y (b) crea `admin_products_with_broken_images()`, un detector permanente. El seed se corrige para no volver a crearlas, y un test lo comprueba. Se añade la vista `/admin/catalogo?ver=foto-rota` y un aviso en el panel de inicio.
+
+- **Se borran, no se «arreglan»:** una fila cuyo objeto no existe no se puede pintar, optimizar ni compartir. Lo único que aportaba era hacer mentir a P2. Borrarla devuelve al producto a su estado honesto —«publicado sin foto»—, que es lo que es.
+- **Alcance deliberado: solo `url` NO vacía.** La cadena vacía ya es territorio de P2, y juntarlas volvería a mezclar dos problemas que P2 separó a propósito.
+- **`SECURITY DEFINER` obligado:** el dato vive en `storage.objects`, que PostgREST no expone y tiene su propia RLS. Por eso la puerta `is_admin()` va **dentro del WHERE**: un no-admin recibe cero filas, no un error. Con `is_active_market` además, por DEC-035.
+- **Una sola consulta, no N+1:** cruzar `product_images` con Storage desde TypeScript habría sido una llamada por producto y además habría exigido `service_role`.
+- **Aviso NEUTRO, no rojo:** el producto se compra igual. El rojo de ese panel significa solo «no se puede comprar» y no debe diluirse.
+
+**Alternatives:** (a) Dejar las filas y solo detectar: el escaparate seguiría sirviendo imágenes rotas y OG un 400. (b) Solo borrar: no impide que vuelva a pasar si alguien borra un objeto desde el panel de Supabase.
+
+**Reason:** Un panel que afirma que un producto tiene foto cuando el cliente ve un hueco es peor que un panel que no dice nada.
+
+**Consequences:** Verificado contra Supabase real **con control positivo y negativo**: una fila con objeto inexistente aparece; una con objeto REAL no aparece; y si ese objeto se borra, vuelve a aparecer — es la prueba de que mira Storage y no una marca en la fila. Sobre el build servido: la ficha ya no lleva ningún `<img>` al optimizador y sirve el hueco honesto **desde el servidor**; y con una foto real subida, la misma ficha anuncia `og:image` que responde **200**, el optimizador devuelve la imagen y el JSON-LD lleva `image`.
+
+**Consecuencia que hay que saber:** los cuatro productos del seed pasan a contarse como «publicados sin foto» en P2 —que es la verdad— y sus fichas **no anuncian `og:image` ni `image` en el JSON-LD**. `image` es propiedad requerida del rich result de producto de Google, así que **ese rich result seguirá incompleto hasta que se suban fotos reales**. No se inventa una imagen de marca para rellenarlo: sería contenido comercial inventado.
+
+---
+
+## DEC-067 — El stock se ESTABLECE con testigo; «Agotar» es el cero y es idempotente
+
+**Status:** Accepted *(Incremento 12, migración 0038, 2026-09-09)*
+
+**Context:** La tienda no tiene almacén propio: una fuente externa dicta la disponibilidad («negra M 4, negra L 0, blanca M 7») y el trabajo del administrador es copiarla. Hasta aquí, `/admin/inventario` solo sabía SUMAR (`admin_restock_variants`, DEC-047), así que para dejar una variante en 4 había que restar de cabeza contra un número que podía haber cambiado hace un segundo — la misma resta que la 0026 vino a quitarle a la máquina, hecha por una persona. La corrección absoluta existía, pero escondida dentro de la ficha del producto: 4.808 px de página y 67 campos para tocar un número (medido en Chrome a 390 px).
+
+**Decision:** `admin_set_variant_stock(p_market_id, p_items)` (0038) con dos modos explícitos, y el inventario agrupado por producto.
+
+- **`mode='set'` exige `expected_updated_at`.** Un valor absoluto depende del valor de partida: quien escribe 12 lo decidió mirando un 4. Si la fila ya no está en ese testigo → `STOCK_CHANGED`. **Sin testigo no es un permiso, es un error** (`EXPECTED_UPDATED_AT_REQUIRED`): deducir «no mandó testigo, luego déjale escribir» convierte un olvido en una escritura sin control.
+- **`mode='exhaust'` no admite ni valor ni testigo y escribe 0.** Poner a cero converge: se aplique en el orden que se aplique, el estado final es el mismo. Medido antes de decidirlo: dos «agotar» simultáneos → ambos 200 y resultado 0; comprar con stock 0 → `OUT_OF_STOCK`. Repetirlo no es un error, se responde «ya estaba agotada».
+- **El lote es TODO O NADA.** Con M=4, L=0, XL=7 y la L cambiada por debajo, no se guarda ninguna. Un guardado a medias parece correcto y no lo es.
+- **Escribir el mismo número no escribe.** Movería `updated_at` y caducaría el testigo de las demás pestañas sin que nada haya cambiado; además no se audita (20 → 20 no es una decisión, DEC-055).
+- **Agotar NO despublica ni desactiva.** `stock = 0` y nada más: el producto sigue publicado y su ficha dice «Agotado» (DEC-052). Tocar `is_active` haría 404 la ficha y chocaría con `enforce_publishable_product`.
+- **Auditoría sin categoría nueva:** la ruta de la RPC se etiqueta `correccion` en `log_admin_change`, que es como ya se etiquetaba el PATCH del panel que hacía lo mismo. «Agotado» es una forma de PINTAR una corrección a 0, y eso es trabajo de la interfaz.
+
+**Alternatives:** (a) Seguir con deltas: obliga al administrador a hacer la resta, que es exactamente el error que se quería evitar. (b) Absoluto sin testigo: medido en la auditoría previa —una venta simultánea desaparece sin que nadie se entere—. (c) Testigo opcional: la ausencia del dato pasa a ser un permiso. (d) Aplicar lo que se pueda del lote e informar de lo demás: deja un estado que nadie decidió.
+
+**Consequences:** Verificado contra Supabase real (24 tests de integración) y sobre el build servido en Chrome a 390 px (36 comprobaciones E2E, una de ellas por POST `multipart/form-data` **sin JavaScript**). Dos administradores con el mismo testigo: uno gana y el otro recibe `STOCK_CHANGED`; una venta también caduca el testigo, así que el pedido no se puede borrar escribiendo encima. Límites: `stock` sigue siendo `int` con `check (stock >= 0)` y **la BD no tiene tope superior**; el 100000 de la función es el `MAX_STOCK` que ya aplicaba `lib/admin/catalog.ts`, no un número nuevo.
+
+---
+
+## DEC-068 — La reposición por delta sale del panel, pero no de la base de datos
+
+**Status:** Accepted *(Incremento 12, 2026-09-09)*
+
+**Context:** Con DEC-067 conviven dos formas de mover stock: sumar (`admin_restock_variants`, 0026) y establecer (`admin_set_variant_stock`, 0038). Dos semánticas en la misma pantalla obligan al administrador a acertar cuál está usando, y el precio de equivocarse es un número mal puesto en la tienda.
+
+**Decision:** El panel escribe SOLO valores absolutos. `admin_restock_variants` **se queda en la base de datos, intacta y con sus tests**, pero ninguna pantalla la llama; se retiran de la aplicación el `restockVariantsAction` y los ayudantes de parseo del delta.
+
+**Alternatives:** (a) Borrar la función: rompería el historial de migraciones para no ganar nada, y una recepción de mercancía (varias entradas concurrentes sobre la misma variante) sigue siendo el caso donde la suma atómica es superior. (b) Mantener los dos campos en la pantalla: es la confusión que este incremento eliminó.
+
+**Consequences:** Un test comprueba que ninguna pantalla del panel vuelve a invocar la reposición por delta. Si algún día hace falta una pantalla de «recepción de mercancía», la función ya está —probada— y ese será su sitio, separada de la edición rápida.
+
+---
+
+## DEC-069 — La atribución es first-touch, vive en el pedido y la sanea PostgreSQL
+
+**Status:** Accepted *(Incremento 14, migración 0040, 2026-09-09)*
+
+**Context:** Para poder anunciarse en Meta hay que saber después qué campaña trajo cada venta. Lo único que existía era `orders.source_url`, que guarda `window.location.href` **del checkout** (`/checkout`): no dice nada del origen. Sin capturar la campaña en la entrada, cada pedido que llegue de un anuncio pierde su origen para siempre.
+
+**Decision:** `orders.attribution jsonb` con siete claves, capturadas en la landing con `sessionStorage` y saneadas dentro de `create_order`.
+
+- **FIRST TOUCH dentro de la sesión de pestaña.** Se guarda la primera campaña y no se sobrescribe. Quien pagó la visita fue el primer anuncio; con last-touch, volver buscando la marca en Google le daría el mérito a quien no pagó nada. La sesión es la pestaña: sin cookies propias, sin identificador persistente.
+- **`sessionStorage`, no cookies.** Es suficiente para el recorrido real (entrar → mirar → comprar), no viaja en cada petición y no crea un identificador que haya que consentir. El carrito ya usa `localStorage`, así que no se introduce una categoría nueva de almacenamiento.
+- **`window.location.search` dentro de un `useEffect`, NO `useSearchParams()`.** Este último marcaría el árbol como dependiente de la petición y obligaría a renderizar dinámicamente. La tienda es SSG + ISR (DEC-004, DEC-021): **los UTM no pueden convertirla en dinámica**. Medido: el HTML servido es idéntico con y sin parámetros, y la misma página cacheada sirve a todas las campañas.
+- **La autoridad del saneado es PostgreSQL.** `create_order` tiene `grant execute` a `anon`: si el filtro viviera solo en TypeScript, un POST directo escribiría JSON arbitrario. La función lee una LISTA BLANCA de siete claves, recorta a 200, quita caracteres de control y descarta lo demás. **Sin PII por construcción**, no por disciplina.
+- **Nunca lanza.** Un objeto corrupto, gigante (>8 KB) o con tipos absurdos deja `attribution = null` y el pedido se crea igual. ATRIBUCIÓN FALLIDA ≠ CHECKOUT FALLIDO.
+- **Histórica e inmutable.** Se escribe una vez, en el INSERT. Un reintento idempotente (DEC-028) devuelve el pedido ya creado sin tocarla, así que un segundo envío con otra campaña no reescribe el origen. **No entra en el fingerprint**: meter la campaña en la identidad del pedido crearía duplicados.
+- **Una sola puerta.** La firma de 7 parámetros de `create_order` se elimina, como la 0035 eliminó la de 6: si sobreviviera, quedaría un camino capaz de crear pedidos que ni siquiera puede recibir atribución.
+
+**Alternatives:** (a) Cookies propias: identificador persistente, consentimiento y peso en cada petición, para un dato que solo hace falta durante la compra. (b) Last-touch: premia al último clic, que en esta tienda suele ser tráfico que la campaña ya había pagado. (c) Guardar la URL entera de entrada: arrastra parámetros ajenos y puede meter PII sin querer. (d) Tabla `attribution_events` aparte: un JOIN y una tabla nueva para un dato que pertenece al pedido y se consulta con él. (e) Saneado solo en la Server Action: deja `anon` escribiendo JSON libre por POST directo.
+
+**Consequences:** Verificado contra Supabase real (17 tests) y en Chrome sobre el build servido (25 comprobaciones E2E, compra completa incluida): una campaña completa llega intacta; el tráfico directo crea el pedido con `null`; un valor de 3000 caracteres se recorta a 200; un email en la URL no se guarda; `sessionStorage` corrupto no impide comprar; `anon` no puede leer ni escribir la columna; y ninguna respuesta pública la contiene. **Coste medido en la landing: +1 petición y +1,1 KB; LCP sin cambio apreciable** (mediana de 5 cargas en frío: 164 ms antes de este trabajo 184 ms, dentro del ruido). Meta Pixel y el consentimiento quedan FUERA, con los puntos de integración documentados en `12-ATTRIBUTION.md` §8.
+
+---
+
+## DEC-070 — «¿Puede vender la tienda?» tiene UNA función, y `settings` se lee por columna
+
+**Status:** Accepted *(Incremento 15, migración 0041, 2026-09-09)*
+
+**Context:** Dos hallazgos, los dos medidos, en la pantalla que el administrador usa para configurar la tienda.
+
+1. **La respuesta a «se puede vender» se daba en dos sitios con criterios distintos.** El panel de inicio miraba solo `isWhatsAppConfigured()`; `/admin/ajustes` tenía además un aviso suelto para cuando no quedaba ningún método de entrega. Las dos cosas impiden completar un pedido —el checkout exige elegir método y `create_order` lo valida—, pero solo una se llamaba «la tienda no puede recibir pedidos». Un panel que dice «listo» mientras el cliente no puede comprar es peor que no decir nada.
+2. **`anon` podía leer la fila entera de `settings`.** Medido: `GET /rest/v1/settings?select=*` con la anon key devolvía las diez columnas. RLS decide filas, no columnas.
+
+Y un tercero, de configuración fantasma: `contact_email`, `instagram_url`, `tiktok_url` y `facebook_url` llevaban desde la Fase 8 siendo **editables sin que nada los pintara**.
+
+**Decision:**
+
+- **`resolveSaleBlockers` (`lib/store/sale-status.ts`) es la única definición.** Devuelve la lista de lo que impide vender —hoy dos casos— y la consumen el panel de inicio y `/admin/ajustes`. Ninguna pantalla vuelve a evaluar el criterio por su cuenta, y hay un test que falla si alguna lo intenta. Reutiliza `isWhatsAppConfigured`, no una copia.
+- **Qué cuenta como bloqueo:** solo lo que impide COMPLETAR un pedido hoy. Un catálogo vacío o sin stock **no** entra: eso es una tienda sin nada que vender, no una tienda rota, y ya lo cuentan el resumen de no vendibles y el inventario.
+- **Ante la duda, se informa de BLOQUEO.** Si falla el recuento de métodos activos, la capa de datos devuelve 0: un falso «lista para vender» es peor que un falso aviso.
+- **`GRANT SELECT` por columna sobre `settings` para `anon` (0041).** No arregla ninguna fuga actual: cierra la puerta por la que entraría la próxima, porque `settings` es exactamente donde va a caer un Pixel ID o un token. Con esto, **una columna nueva nace privada**.
+- **El footer consume el contacto y las redes.** Se acaba la configuración que se guarda y no se publica en ninguna parte.
+
+**Alternatives:** (a) Dejar cada pantalla con su criterio: es el estado que produjo el desfase. (b) Meter «sin productos publicados» entre los bloqueos: diluye el mensaje y llena de rojo una tienda que simplemente está empezando. (c) Vista SQL pública de `settings` en vez de grants: una vista más que mantener para lo mismo. (d) Borrar las columnas de contacto/redes en vez de publicarlas: se pierde información que el cliente sí quiere (una tienda que se anuncia en Instagram y no enlaza su Instagram).
+
+**Consequences:** Verificado en Chrome sobre el build servido (30 comprobaciones E2E): con el número del seed la pantalla dice **VENTA BLOQUEADA** y explica por qué; al guardar un número real pasa a **LISTA PARA VENDER**, el checkout crea el pedido y el enlace `wa.me` lleva el número nuevo; cambiar el precio de envío se refleja en el checkout **y el pedido anterior conserva el suyo**; el email guardado aparece en el footer público en la siguiente carga. Verificado contra Supabase real: `anon` recibe **401 · 42501** al pedir `select=*` y 200 en las columnas públicas; ni `anon` ni un autenticado sin rol pueden escribir. **Sin cambios de esquema**: 0041 solo mueve permisos.
+
+**Consecuencia que hay que saber:** `authenticated` conserva la lectura completa de `settings` porque el panel la necesita y hoy no existen cuentas de cliente (DEC-011). El día que existan, esa lectura hay que estrecharla.
+
+---
+
+## DEC-071 — La identidad pública de la tienda vive en `settings`, no en el código
+
+**Status:** Accepted *(Incremento 16, migraciones 0042 y 0043, 2026-09-10)*
+
+**Context:** `settings.store_name` era editable en `/admin/ajustes` desde la Fase 8, y desde el incremento 15 el Footer lo pintaba. Pero el nombre de la tienda seguía escrito a mano en otros cinco sitios, y ninguno lo leía de la base de datos:
+
+| Dónde | Qué había escrito |
+|---|---|
+| `app/layout.tsx` | `title.default = "YI"`, `template = "%s · YI"`, `description = "Vive a tu propio ritmo."` |
+| `app/(store)/page.tsx` | `openGraph.siteName`, `openGraph.title`, `twitter.title` y las dos `description` |
+| `app/(store)/page.tsx` | los *fallbacks* del hero cuando no hay bloque editorial |
+| `app/(store)/producto/[slug]/page.tsx` | `openGraph.siteName` de **cada ficha** |
+| `app/opengraph-image.tsx` | el nombre y la frase de la imagen que se ve al compartir el enlace |
+
+Consecuencia: el administrador podía renombrar la tienda y **no cambiaba ni una pestaña del navegador, ni un resultado de Google, ni la tarjeta que se ve al pegar el enlace en WhatsApp**. Renombrar exigía tocar cinco archivos y desplegar — justo lo que la regla de este incremento prohíbe.
+
+La frase «Vive a tu propio ritmo.» estaba además **duplicada cinco veces** y no existía en ninguna columna.
+
+**Decision:**
+
+- **`store_name` y una columna nueva `tagline` (0042) son la identidad pública**, y las leen la metadata del grupo `(store)`, el logo del Header, el Footer, el Open Graph de la home y de cada ficha, y la imagen de portada.
+- **La metadata se resuelve en `app/(store)/layout.tsx`, no en el layout raíz.** El raíz envuelve también `/admin`, que es `force-dynamic` y no se indexa: poner ahí una consulta a Supabase la cobraría en cada render del panel para pintar un título que a nadie le importa. El panel conserva su propia plantilla.
+- **Coste cero en consultas.** `getStorefrontSettings` es `cache()` de React y el layout ya la llamaba para el Footer, así que `generateMetadata` y el render comparten resultado dentro de la misma petición. Verificado en el build: `/` sigue saliendo `○ (Static)` con ISR de 5 min y las fichas siguen siendo `● (SSG)`.
+- **`tagline` es NULLABLE y vacío significa vacío.** Sin frase no se pinta ninguna descripción: **nunca** se sustituye por un texto por defecto escrito en el código (regla #9). El backfill de la 0042 copia el valor que tenía el código, así que el comportamiento visible no cambia hasta que alguien lo edite.
+- **`app/opengraph-image.tsx` pasa de horneada en el build a ISR de 5 min**, la misma cadencia que la home, y queda dentro del alcance de `revalidateStorefront()`. Es la imagen que más se ve de una tienda que se anuncia: dejarla con la marca vieja era el peor sitio para quedarse desactualizado.
+- **Los límites suben a PostgreSQL (0042, corregida por la 0043).** Nombre no en blanco y ≤ 80; frase NULL o no en blanco y ≤ 160; email con forma de email; redes solo `https://`. Medido antes: con la sesión de un admin y sin pasar por el panel, un `store_name` de tres espacios, un `instagram_url` con `javascript:` y un `contact_email` que no es un email devolvían **200 y se guardaban**. El segundo acaba en el `href` de un enlace del footer de todas las páginas.
+
+**Alternatives:** (a) Dejar la marca en el código «porque casi nunca cambia»: es exactamente el tipo de dato que este incremento venía a sacar del código, y su coste de cambio era un despliegue. (b) Resolver la metadata en el layout raíz: más simple de escribir, pero cobra una consulta a Supabase en cada render del panel. (c) `tagline NOT NULL` con valor por defecto: impide que el administrador decida no publicar descripción y reintroduce copy inventado en el esquema. (d) Dejar `opengraph-image` estática: el enlace compartido seguiría enseñando el nombre viejo. (e) Validar solo en el formulario: es la barrera que ya existía y que el PATCH directo se saltaba.
+
+**Consequences:** Verificado en Chrome 152 headless a 390×844 sobre el build servido (33 comprobaciones): el `<title>`, el `<meta description>`, el logo del Header, el `og:site_name` de la home y de la ficha y el Footer salen todos de la fila de `settings`; cambiar el nombre desde el panel lo refleja una ruta dinámica **sin desplegar**; borrar la frase no deja un texto por defecto. Verificado contra Supabase real (26 comprobaciones): las seis restricciones devuelven **23514**, `anon` lee `tagline` y sigue recibiendo **401** al pedir `select=*`, y ni `anon` ni un autenticado sin rol pueden escribirla.
+
+**Lo que se rompió y se corrigió dentro del propio incremento:** la 0042 escribió `btrim(store_name) <> ''`, y **`btrim` sin segundo argumento recorta solo el carácter espacio**: un nombre hecho de un tabulador y un salto de línea la pasaba (200). Lo cazó su propio test de integración con la migración ya aplicada. La **0043** la sustituye por `~ '[^[:space:]]'`, el equivalente exacto de `String.prototype.trim()`. La 0042 se deja tal y como se ejecutó: reescribir una migración ya aplicada haría que el repositorio describiera una base de datos que no existe.
+
+---
+
+## DEC-072 — El cliente pregunta por el estado de venta ANTES de rellenar el checkout
+
+**Status:** Accepted *(Incremento 16, sin cambios de esquema, 2026-09-10)*
+
+**Context:** DEC-070 dejó `resolveSaleBlockers` como única definición de «¿puede vender la tienda?», pero **solo la consumía el panel**. La tienda pública seguía comportándose como antes: `/checkout` pintaba el formulario entero —nombre, teléfono, método de entrega, botón— y el cliente descubría que no se podía comprar **después** de rellenarlo todo y pulsar «COMPRAR POR WHATSAPP», cuando `WhatsAppChannel` devolvía `CHECKOUT_NOT_CONFIGURED`.
+
+Reproducido en Chrome sobre el build servido con el estado REAL del repositorio (número de WhatsApp del seed): el formulario completo se pintaba y el rechazo llegaba al final del camino.
+
+**Decision:**
+
+- **`/checkout` resuelve los bloqueos en servidor y, si hay alguno, no pinta el formulario.** Da un mensaje neutro y una salida al carrito. El carrito no se pierde.
+- **Al cliente NO se le enseñan los `title`/`fix` de los bloqueos.** Son instrucciones para el administrador y describen cómo está configurada la tienda («no hay WhatsApp», «no hay métodos de entrega»). Hay un test que falla si esa información aparece en la página.
+- **El criterio es uno; la carga de datos, dos formas.** `getSaleBlockers` (`lib/store/sale-status-data.ts`) hace las dos consultas para quien no tiene los datos —el panel de inicio—. `/checkout` y `/admin/ajustes` llaman a `resolveSaleBlockers` directamente **porque ya tienen los datos en la mano**, y pedirlos otra vez sería un viaje de más. El test que impedía que una pantalla evaluara el criterio por su cuenta ahora cubre también `/checkout`.
+- **Medido, y por eso está así:** un viaje de ida y vuelta a Supabase desde el entorno de desarrollo cuesta ~85 ms. Con `getSaleBlockers`, `/checkout` pasaba de un round-trip a dos secuenciales (**p50 231 ms**). Resolviendo el bloqueo con la lista de métodos que la página ya carga, quedan **dos consultas en paralelo: p50 195 ms**.
+- **Cada bloqueo del panel lleva un ancla** (`blocker.anchor`) a la sección de `/admin/ajustes` que lo arregla. En un móvil, «escribe el número» sin enlace obliga a buscar el campo a mano. Un test comprueba que esas anclas **existen** en la página.
+
+**Alternatives:** (a) Dejarlo como estaba: el cliente hace todo el trabajo para nada, y el único aviso llega en forma de error. (b) Contarle al cliente qué falta: expone la configuración de la tienda a cualquiera que abra el checkout. (c) Esconder el enlace al checkout desde el carrito: el cliente puede llegar por URL directa y el gate del servidor sigue haciendo falta. (d) Usar `getSaleBlockers` también en `/checkout`: más uniforme de leer, +85 ms medidos por carga para contar algo que la página ya sabe.
+
+**Consequences:** Verificado en Chrome sobre el build servido (69 comprobaciones E2E entre cliente y panel): con el número del seed, `/checkout` no pinta el formulario, lo dice sin tecnicismos y conserva el carrito; al guardar un número real vuelve el formulario; al desactivar **todos** los métodos de entrega se bloquea otra vez y el checkout **no revienta**; al reactivarlos vuelve, la compra se completa y el envío y el total persistidos son **exactamente** los que vio el cliente antes de confirmar.
+
+---
+
+## DEC-073 — «No se pinta» no era «no se puede leer»: `supplier` y `supplier_ref` pasan a privadas
+
+**Status:** Accepted *(Incremento 16, migración 0044, 2026-09-10)*
+
+**Context:** El incremento 13 creó `products.supplier` y `product_variants.supplier_ref` y verificó que **la ficha pública no las muestra** — sigue siendo cierto, re-verificado en el E2E de este incremento. Pero con la anon key, que viaja en el navegador de cualquiera, las dos columnas se podían pedir directamente a PostgREST y devolvían **200**.
+
+Hoy están a NULL en todo el catálogo, así que **no había fuga de datos: había una puerta abierta**, y se abriría de par en par en cuanto el administrador escribiera de quién se surte y con qué referencia, que es exactamente para lo que se crearon. El propio CLAUDE.md ya lo dice del campo hermano que se decidió no crear: «la condición de réplica es interna y no debe poder llegar al cliente».
+
+**Decision:**
+
+- **`GRANT SELECT` por columna para `anon` sobre `products` y `product_variants` (0044)**, el mismo mecanismo que la 0041 estrenó en `settings`. RLS decide qué FILAS se ven, no qué columnas: no sabe expresar esto.
+- **Efecto secundario deseado: una columna nueva de cualquiera de las dos tablas nace PRIVADA.** Si tiene que ser pública, hay que decirlo en una migración a propósito.
+- **Las columnas de FILTRO también se conceden.** PostgreSQL exige privilegio de SELECT sobre toda columna que aparezca en un `WHERE`, no solo en la lista de salida: sin `market_id`, `status`, `deleted_at`, `slug` o `is_active`, el escaparate entero daría 401. Hay controles positivos en los tests para cada consulta pública real.
+- **`authenticated` conserva la lectura completa**: el panel las necesita para reponer, y hoy el único autenticado posible es un administrador (DEC-011). Misma advertencia que DEC-070: el día que existan cuentas de cliente, hay que estrecharla.
+- **El modelo de réplicas NO cambia.** Dos productos distintos siguen pudiendo ser dos publicaciones del mismo artículo externo, sin `UNIQUE`, sin tabla de proveedores y sin campo `replica` (incremento 13). Lo único que se arregla es quién puede leer el dato.
+
+**Alternatives:** (a) Dejarlo: el dato se vuelve sensible en cuanto se rellene, y entonces la fuga ya existe. (b) Vista pública sin esas columnas: una vista más que mantener y todo el data layer a reescribir. (c) Sacar las columnas a una tabla aparte solo-admin: una tabla y un JOIN para dos campos de texto que pertenecen al producto.
+
+**Consequences:** Verificado contra Supabase real: `anon` recibe **401 · 42501** al pedir `supplier`, `supplier_ref` o `select=*` en cualquiera de las dos tablas, y **200** en las cinco consultas que hace el escaparate de verdad (catálogo, ficha, sitemap y variantes); un admin las sigue leyendo. Un test de integración existente cambió de forma —el PATCH anónimo ahora muere en el permiso de columna antes de llegar a la policy— y se ajustó para seguir afirmando **la propiedad real** (no se escribió nada), no un código de estado concreto.
+
+---
+
+## DEC-074 — El logo se administra, y el orden de escritura es la garantía
+
+**Status:** Accepted *(Incremento 17, sin migraciones, 2026-09-10)*
+
+**Context:** `settings.logo_url` existía desde la migración `0013`, el bucket `content` desde la `0015` con las policies correctas (lectura pública, escritura solo `is_admin()`), y la infraestructura de imágenes desde la Fase 8 (magic bytes + `sharp` → WebP). Lo único que faltaba era la pantalla, y `/admin/ajustes` decía literalmente «subida pendiente» enseñando la ruta cruda del objeto. Poner un logo exigía tocar la base de datos a mano.
+
+**Decision:**
+
+- **Reutilizar todo lo que ya existía.** Sin migración: el bucket `content` y sus cuatro policies de la `0015` son exactamente las que hacen falta. `checkImageUpload` (magic bytes, no `File.type` ni `allowed_mime_types`) y la recodificación con `sharp` se comparten con el catálogo. **Sin `service_role`**: escribe la sesión del admin y autoriza `admin_write_content_bucket`.
+- **512 px y calidad 90**, frente a los 2000 px y calidad 80 del catálogo. Un logo se pinta a 32 px en la cabecera y a ~180 px en la tarjeta de Open Graph; por encima de 512 solo se paga transferencia. La calidad sube porque un logo tiene bordes duros y texto, donde los artefactos se ven mucho antes que en una fotografía. Se conserva la transparencia.
+- **Cada subida escribe un objeto NUEVO** (`logo/{market}-{uuid}.webp`), nunca sobrescribe la ruta anterior. **Medido**: tras borrar un objeto, su URL pública **sigue devolviendo 200** un rato porque la sirve un CDN por delante de Storage. Con una ruta fija, sustituir el logo dejaría al cliente viendo el anterior y al administrador sin forma de arreglarlo desde el panel.
+- **El orden de la sustitución hace que el fallo posible sea el barato:** (1) subir el objeto nuevo, (2) escribir `logo_url`, (3) borrar el anterior. Si (2) falla se descarta el objeto nuevo y **el logo anterior sigue publicado**; si (3) falla queda un objeto sin dueño, molesto e inofensivo. El orden contrario —borrar primero— abriría una ventana con `logo_url` apuntando a un objeto inexistente, es decir, la tienda entera con la imagen rota.
+- **`isLogoPath` se comprueba antes de borrar.** La RLS de Storage solo mira que seas admin, no de qué es el objeto: sin esa comprobación, un `logo_url` manipulado en la base de datos haría que sustituir el logo borrase una foto del catálogo.
+- **Se puede quitar el logo.** Sin esa salida, subir el archivo equivocado deja la tienda con él puesto y sin remedio desde el panel. Ahí el orden se invierte a propósito —primero la fila, después el objeto—, porque el estado final deseado es «sin logo».
+- **`logo_url` guarda la RUTA, no la URL**, igual que `product_images.url`: así el identificador del proyecto de Supabase no queda escrito en las filas. `getPublicUrl` es una operación de cadena, sin red.
+- **Sin DAM, sin biblioteca, sin selector, sin recorte.** Subir → guardar → usar. Un logo es uno, y el que vale es el que está publicado.
+
+**Alternatives:** (a) Sobrescribir siempre la misma ruta: más simple y roto por el CDN, medido. (b) Borrar el objeto viejo antes de escribir la fila: cambia un huérfano de kilobytes por una tienda con la imagen rota. (c) Guardar la URL absoluta en `logo_url`: mete el project-ref de Supabase en las filas y mover el proyecto obliga a reescribirlas. (d) Un `try/finally` que «garantice» la limpieza: no crea una transacción entre Storage y PostgreSQL, solo lo aparenta.
+
+**Consequences:** Verificado en Chrome headless a 390×844 sobre el build servido (42 comprobaciones del panel): un SVG disfrazado de PNG se rechaza **por su contenido**, un archivo de 8 MB se rechaza con «La imagen pesa 8.3 MB y el máximo son 5 MB», y ninguno de los dos deja rastro; una subida válida convierte un PNG de 900×300 en **WebP de 512×171 y 1 KB**, el panel lo confirma y el administrador lo ve al instante. Sustituir deja **exactamente un objeto** en el bucket. Quitarlo deja `logo_url` a NULL y borra su objeto. Verificado contra Supabase real (16 comprobaciones): anon y autenticado-sin-rol no pueden subir, borrar ni cambiar la referencia, y el objeto sigue intacto tras cada intento; el cliente lo lee sin sesión.
+
+**Riesgo residual, documentado y no disimulado:** si el proceso muere entre (2) y (3), el objeto anterior queda huérfano para siempre. No hay transacción entre Storage y PostgreSQL. El coste son kilobytes y solo lo paga una sustitución interrumpida.
+
+---
+
+## DEC-075 — «Lista para vender» es una lista, no un semáforo
+
+**Status:** Accepted *(Incremento 17, sin migraciones, 2026-09-10)*
+
+**Context:** DEC-070 y DEC-072 dejaron `resolveSaleBlockers` como criterio único, pero el panel **solo enseñaba los fallos**. Con un fallo, el requisito que sí se cumplía desaparecía de la pantalla: el administrador no podía distinguir «el envío está bien» de «nadie ha mirado el envío». Y «Lista para vender» era un párrafo que había que creerse.
+
+**Decision:**
+
+- **`SALE_CHECKS` es la única declaración**, y cada entrada lleva su propio predicado. `resolveSaleChecklist` devuelve las comprobaciones con su resultado; `resolveSaleBlockers` es `checklist.filter(no pasa)`. Añadir una comprobación es añadir una entrada: no hay un segundo sitio que actualizar y no puede quedarse a medias. Un test comprueba que los bloqueos son **exactamente** las comprobaciones que fallan.
+- **Se ven siempre las dos, con ✓ o ✕**, y cada fallo lleva **su propio botón** (`Configurar WhatsApp`, `Configurar entrega`) al ancla que lo arregla, con 44 px de alto.
+- **NO se inventan comprobaciones.** Son dos porque son dos las cosas que impiden completar un pedido. Añadir «configuración de envío válida» quedaría bonito y sería mentira: los importes negativos ya los rechaza PostgreSQL (migración `0036`), así que esa comprobación no puede fallar nunca y solo añadiría un ✓ decorativo. Hay un test que fija la lista en dos.
+- **Ni tecnicismos ni alarmismo.** El rojo aparece solo cuando el cliente no puede comprar. Nada de códigos, nombres de columna ni errores de SQL: eso va al log. Un test recorre los textos y falla si aparecen.
+- **Cuando la tienda vende no hay botones**: «todo bien» no es una tarea.
+- Se retira `getSaleBlockers`, que se quedó sin consumidores. Dejarla habría sido el camino paralelo que este incremento venía a evitar.
+
+**Alternatives:** (a) Dejar solo los fallos: es el estado que no distinguía «bien» de «sin mirar». (b) Declarar la lista de checks aparte de los bloqueos: dos sitios que actualizar y la posibilidad de que discrepen. (c) Añadir un tercer check «configuración válida» para que la lista quede más llena: información falsa.
+
+**Consequences:** Verificado en Chrome sobre el build servido: con el número del seed, la pantalla dice **Venta bloqueada**, enseña `✕ WhatsApp` **y** `✓ Método de entrega activo`, y ofrece un botón a `#whatsapp` de 44 px; al guardar un número real pasa a **Lista para vender** con las dos en ✓, cero botones y «La tienda puede aceptar pedidos», **sin recargar a mano**.
+
+---
+
+## DEC-076 — El límite del proxy hacía inalcanzable al límite de la Server Action
+
+**Status:** Accepted *(Incremento 17, corrección de un fallo del incremento 7, 2026-09-10)*
+
+**Context:** El incremento 7 midió que Next limita el cuerpo de una Server Action a 1 MB por defecto y lo configuró a 26 MB (`5 × 5 MB + 1 MB`) para que cupiera el lote de 5 fotos que promete la interfaz. **Ese límite nunca se alcanzaba.** Con `proxy.ts` presente —y lo hay desde la Fase 7—, Next clona y bufferiza el cuerpo en memoria para que puedan leerlo el proxy y la ruta, con un tope PROPIO de **10 MB por defecto** (`proxyClientMaxBodySize`).
+
+Reproducido sobre el build servido, adjuntando los archivos en el formulario real del catálogo:
+
+    3 fotos × 4,84 MB = 14,5 MB → pantalla "Algo ha fallado", 0 imágenes subidas
+    log: "Request body exceeded 10MB for /admin/catalogo/…"
+         "Error: Unexpected end of form"
+
+Cada archivo pasaba su validación de 5 MB; lo que fallaba era el transporte. El administrador solo veía un error genérico — **el mismo síntoma exacto que el incremento 7 creía haber arreglado**.
+
+**Decision:** `experimental.proxyClientMaxBodySize` se configura **derivado de la misma constante** `ACTION_BODY_LIMIT_BYTES`, para que los dos límites no puedan volver a separarse, con un test que lo comprueba. El coste es memoria del servidor mientras dura la subida; con un panel de un solo administrador es un intercambio razonable, y es exactamente lo que la interfaz ya prometía.
+
+**Alternatives:** (a) Bajar `MAX_FILES_PER_BATCH` a 2 para caber en 10 MB: reduce la funcionalidad para adaptarse a un límite que se puede configurar. (b) Escribir `'26mb'` a mano: es el literal suelto que el test del incremento 7 ya prohíbe para el otro límite. (c) Dejarlo y documentarlo: el flujo real —fotos de móvil que llegan por WhatsApp de tres en tres— falla, y falla sin explicación.
+
+**Consequences:** Medido antes y después con el mismo lote de 14,5 MB: **0 imágenes → 3 imágenes**. Los dos límites salen ahora de la misma constante.
+
+---
+
+## DEC-077 — `next/og` no sabe leer WebP, y el logo estaba rompiendo la tarjeta
+
+**Status:** Accepted *(Incremento 17, 2026-09-10)*
+
+**Context:** Al meter el logo en `app/opengraph-image.tsx` pasándolo como data URI WebP —el formato en el que se guarda—, la ruta devolvió **500** y el log del servidor dijo `TypeError: u2 is not iterable`. Verificado en el código compilado de Satori (`node_modules/next/dist/compiled/@vercel/og/index.node.js`): su lista de tipos admitidos no incluye WebP, y el detector se va por la rama del SVG y revienta.
+
+Consecuencia si se hubiera publicado así: **subir un logo dejaba rota la tarjeta de Open Graph**, es decir, la imagen que se ve al pegar el enlace de la tienda en WhatsApp, en Instagram o en un anuncio. Justo el sitio donde más duele, y en el incremento que prepara el terreno para Meta Ads.
+
+**Decision:** los bytes se traen con un tope de tiempo de 2,5 s y **se convierten a PNG con `sharp`** antes de pasarlos a `ImageResponse`. `sharp` ya es dependencia del proyecto y la ruta corre en Node, así que no añade nada nuevo; la conversión ocurre como mucho una vez cada 5 minutos (ISR). **Cualquier fallo —red, 404, objeto de más de 1 MB, `sharp`— cae al diseño tipográfico anterior**: una tarjeta sin logo es peor que una con logo, pero una tarjeta que no carga es peor que las dos.
+
+**Alternatives:** (a) Guardar además una copia PNG del logo: dos objetos por logo, en contra de DEC-036 («un objeto por imagen»), y dos cosas que mantener sincronizadas. (b) Dejar el logo fuera de la tarjeta: se pierde precisamente donde la marca importa. (c) Dejar que `ImageResponse` pida la URL remota: es lo que no funciona de forma fiable en una ruta de metadata, y tampoco arregla el formato.
+
+**Consequences:** Verificado sobre el build servido: con logo, `/opengraph-image` responde **200 · image/png · 30,3 KB**. Sin logo, la tarjeta es la misma de antes. El coste servido no cambia (5–6 ms, es ISR); la regeneración añade una petición a Storage y una conversión, como mucho cada 5 minutos.
+
+---
+
+## DEC-078 — La recuperación de contraseña es de Supabase Auth, y recuperar no es entrar
+
+**Status:** Accepted *(Incremento 18, sin migraciones, 2026-09-11)*
+
+**Context:** Perder la contraseña del panel dejaba al administrador fuera **sin salida**: no había recuperación, y la única forma de volver era tocar Supabase a mano. Era el riesgo operativo más caro que quedaba, porque no se manifiesta hasta el día que pasa.
+
+**Decision:**
+
+- **Todo el flujo es de Supabase Auth.** No se generan tokens propios, no se guarda nada en ninguna tabla, no se toca `profiles` y **no se usa la service role key en ninguna parte del código de producción** (hay un test que lo comprueba archivo por archivo). Quien emite, valida, caduca y consume el token es Supabase.
+- **Ninguna recuperación alternativa**: ni código maestro, ni segunda contraseña, ni preguntas, ni WhatsApp, ni email guardado en `settings`, ni endpoint secreto.
+- **La respuesta nunca enumera cuentas.** Medido: `POST /auth/v1/recover` devuelve **200 con cuerpo vacío tanto si el email existe como si no**. La action devuelve `sent: true` en **todos** los caminos que llevan un email —formato inválido incluido, y también cuando Supabase falla o limita—; el único `sent: false` es el del campo vacío, que no dice nada de ninguna cuenta. Un test lee el código fuente y falla si alguna rama corta el flujo.
+- **La protección contra abuso la pone Supabase, y está medida**: durante la auditoría el proyecto respondió `429 · over_email_send_rate_limit` y `over_request_rate_limit`. No se añade un contador propio: sería un límite peor —en memoria de un proceso, sin coordinación entre instancias— delante del que ya funciona. Como no puede distinguirse sin enumerar, un 429 se presenta igual que un éxito.
+- **La política de contraseñas es la del proyecto, no una inventada.** Medido: `weak_password · "Password should be at least 6 characters."`, sin requisitos de mayúsculas, dígitos ni símbolos. La pantalla dice «mínimo 6» y, si el servidor rechaza, **muestra su mensaje tal cual**, para que endurecer la política en el panel de Supabase se refleje sin tocar código.
+- **⚠️ AUTENTICACIÓN ≠ AUTORIZACIÓN, y se verifica.** Recuperar devuelve el acceso a una cuenta de Supabase Auth; entrar al panel sigue dependiendo de `is_admin()`. Una cuenta sin fila en `profiles` recupera su contraseña con normalidad, entra en Supabase Auth y **sigue sin poder abrir el panel** (verificado en navegador y contra la base de datos). Por eso la pantalla de contraseña vive en el grupo `(auth)` y **no consulta el rol**: no es asunto suyo, y consultarlo invitaría a decidir accesos en el sitio equivocado.
+- **Cambiar la contraseña CIERRA la sesión de recuperación** y devuelve al login. Así la contraseña nueva se prueba de inmediato, no queda abierta una sesión nacida de un enlace de correo, y el acceso al panel vuelve a pasar por `loginAction`, que es donde se comprueba `is_admin()`.
+- **El proxy gana una lista de rutas públicas** (`/admin/recuperar`, `/admin/reset-password`, `/admin/auth/confirm`) y **sigue sin comprobar el rol** (DEC-031 intacta, con test). Sin esa lista la recuperación sería imposible por construcción: quien ha perdido la clave no tiene sesión.
+
+**Alternatives:** (a) Un reset propio con tokens en una tabla: reimplementar criptografía, caducidad y de un solo uso que Supabase ya hace bien, y añadir una tabla de secretos al esquema. (b) Un código maestro o un bypass administrativo: una segunda llave permanente, que es exactamente lo que no se quiere tener. (c) Rate limiting propio: un límite peor delante del que ya funciona. (d) Meter la pantalla de contraseña en `(panel)`: el guard de admin echaría a cualquier cuenta sin rol antes de dejarle terminar, y una cuenta no-admin también tiene derecho a recuperar la suya. (e) Exigir mayúsculas y símbolos: pedir en el formulario algo que el servidor no exige.
+
+**Consequences:** Verificado en Chrome 153 headless a 390×844 sobre el build servido (**45 comprobaciones**) y contra Supabase real (**9 de integración**): el enlace del correo lleva a la pantalla de contraseña, el token **desaparece de la barra de direcciones**, la contraseña cambia, la antigua deja de valer, el enlace **no se puede reutilizar**, y una cuenta sin perfil que recupera **no entra al panel ni gana un perfil**. Los tres casos de email —no registrado, formato inválido y registrado de verdad— producen **exactamente la misma pantalla**.
+
+---
+
+## DEC-079 — El token del email llega en el FRAGMENTO, y por eso hay dos caminos
+
+**Status:** Accepted *(Incremento 18, 2026-09-11)*
+
+**Context:** Al medir el enlace real que genera este proyecto:
+
+    GET /auth/v1/verify?token=…&type=recovery&redirect_to=…
+    → 303  Location: <redirect_to>#access_token=…&refresh_token=…&type=recovery
+
+El token viaja en el **fragmento** de la URL. El fragmento **no se envía al servidor**: ni el proxy, ni un Route Handler, ni un Server Component pueden verlo. Un flujo 100 % de servidor no puede leerlo, y este panel es 100 % de servidor con cookies `httpOnly`.
+
+La alternativa existe y es mejor: una plantilla de email con `{{ .TokenHash }}` enlaza directamente a una ruta propia con `?token_hash=…&type=recovery`, que sí se resuelve entero en servidor. Pero eso es **configuración del panel de Supabase** (Authentication → Email Templates), no código.
+
+**Decision:** se admiten **los dos caminos**, y los dos acaban con la sesión en cookies `httpOnly` del servidor:
+
+1. **`/admin/auth/confirm?token_hash=…&type=recovery`** — Route Handler que llama a `verifyOtp` en servidor. El token **no pasa nunca por JavaScript**. Es el camino preferible y el que se documenta como configuración recomendada. Acepta **solo** `type=recovery`: no es un confirmador genérico de OTP.
+2. **El fragmento** — un componente cliente mínimo en `/admin/reset-password` lo lee, lo entrega **una vez** a una Server Action que llama a `setSession`, y lo **borra de la barra de direcciones** con `replaceState`. Funciona con la plantilla por defecto y sin tocar nada en Supabase.
+
+El camino (2) acepta tokens del cliente, así que **los valida**: `setSession` solo guarda; quien decide si valen es `getUser()`, que pregunta a Supabase en vez de creerse la cookie. Si no valen, se cierra la sesión y no queda ninguna cookie. No se usa `lib/supabase/browser.ts`, que guardaría la sesión en una cookie legible por JavaScript y rompería la decisión de `lib/supabase/cookies.ts`.
+
+**Alternatives:** (a) Solo el fragmento: obliga a que el token pase por JavaScript siempre, incluso cuando no haría falta. (b) Solo `token_hash`: más limpio, pero **no funciona con la configuración actual del proyecto** — el enlace no llegaría nunca a esa ruta. (c) Usar el cliente de navegador de Supabase: rompe `httpOnly`, que se decidió a propósito en la Fase 7. (d) Cambiar la plantilla del email desde el código: no se puede; es configuración del proyecto.
+
+**Consequences:** Verificado en navegador: siguiendo el `action_link` real, se aterriza en `/admin/reset-password`, se pinta el formulario con el email de la cuenta y **el hash ya no está en la URL**. Un `token_hash` falso por query acaba en la misma pantalla con el mensaje único «Este enlace no sirve» — caducado, ya usado, manipulado e inexistente no se distinguen.
+
+**Lo que depende de configuración EXTERNA y no se ha simulado:** la **entrega del correo**. El SMTP integrado de Supabase está limitado (respondió `429` en esta misma auditoría) y en proyectos alojados solo entrega a miembros del equipo. Para que el administrador reciba el correo de verdad hace falta **configurar un SMTP propio** en el panel de Supabase. Todo lo demás del flujo está verificado contra el proyecto real; el enlace de los tests se obtiene con `admin/generate_link`, que ocupa el lugar del buzón que este entorno no tiene.
+
+---
+
+## DEC-080 — La ficha dice el envío, y por eso el escaparate se invalida al cambiarlo
+
+**Status:** Accepted *(Incremento 19, sin migraciones, 2026-09-11)*
+
+**Context:** El cliente no sabía cuánto costaba recibir el pedido hasta el último paso. Peor: el carrito rotulaba **«Total»** —y en rojo, el color del precio— una cifra que **no incluye el envío**. Un carrito de 34,90 € acababa cobrando 39,80 €, y el cliente lo descubría en el checkout. Es la definición de «precio que cambia sin explicación».
+
+**Decision:**
+
+- La ficha y el carrito muestran el envío, y **siempre desde `shipping_methods`** del mercado activo — la misma tabla que lee `create_order` para cobrar (DEC-063). Un módulo puro común, `summarizeShipping`, resume lo que se puede afirmar: precio del método de pago más barato, umbral más bajo de envío gratis y nombre del método gratuito si existe.
+- **Nunca se inventa nada.** No hay plazos de entrega —no existe ninguna columna que los guarde—, ni «envío gratis» a secas, ni importes escritos a mano. Si no hay métodos activos, **no se pinta nada**: un «envío: consultar» es peor que el silencio. Hay tests que fallan si aparece un importe, un plazo o una promesa en el código.
+- **El carrito deja de llamar «Total» a un subtotal.** El importe no cambia; cambia el rótulo, que ahora dice la verdad, y debajo va la nota de envío. El total real lo sigue calculando `create_order`.
+- **⚠️ LAS ACCIONES DE MÉTODOS DE ENTREGA PASAN A INVALIDAR EL ESCAPARATE.** El comentario del incremento 9 —«no hace falta, `/checkout` es dinámica»— dejó de ser cierto en cuanto la ficha y el carrito publicaron el precio: las dos son estáticas con ISR. Sin invalidar, el administrador cambiaría 4,90 € por 6,90 € y el cliente leería 4,90 € durante cinco minutos mientras `create_order` le cobra 6,90 €.
+- **`/carrito` gana `revalidate = 300`.** Al empezar a leer `shipping_methods`, Next la seguía marcando `○ (Static)` **sin revalidación**: el importe habría quedado horneado en el build hasta el siguiente despliegue. Es exactamente el fallo que el incremento 8 midió en `/checkout`, y se cierra por partida doble (cadencia + invalidación).
+
+**Alternatives:** (a) No decir nada del envío hasta el checkout: es el estado que hacía descubrir el coste al final. (b) Escribir «Envío 4,90 €» en el código: se desincroniza con la configuración el primer día. (c) Hacer la ficha `force-dynamic`: destruiría el SSG por un dato que cambia una vez al mes (DEC-021). (d) Dejar el rótulo «Total»: es literalmente falso.
+
+**Consequences:** Verificado en Chrome 153 a 390×844 sobre el build servido: la ficha dice «Envío desde 4,90 € · gratis a partir de 60,00 € · recogida en tienda sin coste», el carrito dice «Subtotal» y repite la nota, y **el checkout cobra exactamente 4,90 €** — el pedido persistido guarda `shipping_total` 4,90 y `total` 39,80. El texto sale de los métodos reales: cambiarlos en el panel cambia las tres pantallas.
+
+---
+
+## DEC-081 — Un producto agotado no puede ofrecer botones de compra
+
+**Status:** Accepted *(Incremento 19, sin migraciones, 2026-09-11)*
+
+**Context:** Medido en Chrome sobre el build servido, con el stock puesto a cero **desde el panel** (para que la invalidación fuese real):
+
+    tallas  → S(off) M(off) L(off)     ← ninguna se puede pulsar
+    botones → «COMPRAR POR WHATSAPP» y «Añadir al carrito» HABILITADOS
+    texto   → en ningún sitio ponía "agotado"
+    JSON-LD → OutOfStock              ← esto sí era correcto
+
+La causa: `isOutOfStock` exigía `selectedVariant !== null`, así que sin variante elegida la disponibilidad no se evaluaba. El cliente pulsaba comprar, se le pedía elegir una talla, y no había ninguna que pudiera elegir. **Un callejón sin salida, y el peor final posible para un clic pagado en un anuncio.**
+
+**Decision:**
+
+- La disponibilidad del **producto** se calcula antes de elegir nada (`productHasStock`), y manda sobre la de la variante.
+- Sin stock: los dos CTA quedan **deshabilitados**, el principal pasa a decir «Agotado», y aparece un aviso explícito —«Agotado por ahora. No queda ninguna talla disponible»— **pegado al precio**, que es lo que decide si merece la pena seguir leyendo.
+- **No se pide lo imposible.** Ni el mensaje de validación «elige una talla» ni la pista «Elige tu talla» aparecen cuando no queda ninguna que elegir: contradecían al aviso de agotado de justo arriba.
+- **No se esconde el producto.** Su ficha sigue respondiendo 200 y sigue en el sitemap, coherente con 5B: un agotado se publica y se enseña, simplemente no se puede comprar hoy.
+
+**Alternatives:** (a) Dejarlo: el cliente choca con una pared sin explicación. (b) Despublicar automáticamente al agotarse: cambia una regla de negocio que 5B decidió a propósito y tira el SEO acumulado de la ficha. (c) Deshabilitar solo tras elegir talla: es lo que fallaba, porque no se puede elegir ninguna.
+
+**Consequences:** Verificado en E2E: con las tres tallas a 0 los botones salen `Agotado:off` y `Añadir al carrito:off`, la página lo dice, el JSON-LD sigue en `OutOfStock` y ya no se pide elegir talla. Al reponer stock desde el panel, la ficha vuelve a vender en la misma comprobación.
+
+---
+
+## DEC-082 — Sin foto, el hueco no ocupa media pantalla y la ficha se comparte igual
+
+**Status:** Accepted *(Incremento 19, sin migraciones, 2026-09-11)*
+
+**Context:** Dos medidas sobre el catálogo real, que hoy **no tiene ninguna fotografía**:
+
+1. **El CTA quedaba a 1,3 pantallas de scroll.** El placeholder con proporción 3/4 ocupa 520 px en un móvil de 390, y empujaba todo hacia abajo: `h1` a 639 px, precio a 748, tallas a 920 y el botón de comprar a **1108 px**. Quien llega desde un anuncio veía un recuadro gris enorme y tenía que bajar dos veces para encontrar cómo comprar.
+2. **`og:image` era `null` y `twitter:card` era `summary`.** Pegar el enlace de un producto en WhatsApp o usarlo como destino de un anuncio daba una tarjeta **sin imagen**, justo cuando la imagen es lo único que detiene el scroll.
+
+**Decision:**
+
+- **Sin foto, el hueco usa proporción ancha; con foto, retrato 3/4.** El recuadro vacío no comunica nada, así que no se gasta la primera pantalla; el retrato se conserva donde sí hay fotografía que enseñar, porque es el formato del producto y el que decide el LCP.
+- **`og:image` cae a la PORTADA de la tienda** (`app/opengraph-image.tsx`) cuando el producto no tiene fotos, y la tarjeta es **siempre** `summary_large_image`. La foto del producto manda cuando existe. No es una imagen inventada del producto: es la marca —logo y frase administrables (DEC-071, DEC-074)—, que es lo único que la tienda puede afirmar con verdad mientras no haya fotografía.
+- **No se rellena el catálogo con imágenes falsas.** Ni servicios de placeholder, ni fotos de stock, ni plantillas que simulen el producto. El hueco sigue siendo un hueco; lo que se arregla es que no estorbe.
+
+**Alternatives:** (a) Quitar el hueco del todo sin foto: la ficha perdería la referencia visual de dónde irá la imagen y saltaría al llegar. (b) Generar una imagen de producto con el nombre: parece una foto y no lo es. (c) Dejar la tarjeta sin imagen: se paga el clic y la tarjeta no llama la atención.
+
+**Consequences:** Medido después, mismo dispositivo y mismo build: `h1` **639 → 363 px**, precio **748 → 472**, tallas **920 → 644**, CTA **1108 → 832 px**. Las tallas y el botón de comprar entran ahora en la primera pantalla (844 px). La página pasa de 1743 a 1551 px de alto. `og:image` responde 200 y la tarjeta es grande.
+
+**Lo que esto NO arregla, y hay que decirlo:** el cliente sigue sin ver el producto. **Falta que se suban las fotos reales**; la vía está probada y funciona (incrementos 7 y 17), y el panel ya lleva de «sin foto» directamente a subirla.
+
+## DEC-083 — La IA propone; guardar sigue siendo un acto del administrador
+
+**Status:** Accepted *(Incremento 20, sin migraciones, 2026-09-11)*
+
+**Context:** Llenar el catálogo es hoy el trabajo principal de la tienda, y la pantalla de alta lo hacía cuesta arriba. Medido en Chrome 153 a 390×844 antes de tocar nada:
+
+- `/admin/catalogo/nuevo` pedía **13 campos visibles** repartidos en **2,5 pantallas**, y **no tenía ningún control de archivo**: la foto —lo único que el administrador tiene en la mano cuando le llega un artículo— se subía después, en otra pantalla.
+- `/admin` **no ofrecía «añadir producto» en ninguna parte**. Tenía cuatro secciones con título de las cuales **tres decían que no había nada que hacer**, y el único aviso real («4 productos publicados no tienen ninguna foto») caía a **825 px**, fuera de la primera pantalla.
+
+**Decision:** la creación de producto pasa a ser **foto primero, cuatro campos y una sola pantalla**, y la IA entra como capa de ayuda con un contrato explícito:
+
+- **La IA solo PROPONE.** Rellena campos del mismo formulario que el administrador ya está mirando; guardar sigue siendo la Server Action de siempre, con `requireAdmin()` y RLS. **Nunca publica**: `createProductWithPhotoAction` crea en `draft` y publicar sigue siendo un acto aparte.
+- **Solo puede proponer lo que se ve en una fotografía**: nombre, descripción corta, descripción, categoría, color aparente y palabras clave. La lista blanca vive en `SUGGESTABLE_FIELDS`.
+- **Lo que no se ve no existe en el tipo.** Composición, materiales, cuidados, tallas, precio, stock, proveedor, referencia y origen están en `FORBIDDEN_FIELDS` con su motivo, y **no hay campo donde ponerlos**: no es un filtro posterior, es que la sugerencia no tiene esa forma. Un modelo escribiría «100 % algodón orgánico» mirando una camiseta gris, y sonaría perfectamente creíble.
+- **La categoría y el color se validan contra el catálogo REAL.** Si el modelo propone una categoría que no existe, el campo queda sin determinar; no se crea nada.
+- **«No determinado» es una respuesta correcta**, se dice en la pantalla, y lo completa una persona.
+- **No se guarda una segunda copia de lo generado.** No hay `ai_description`, ni `ai_category`, ni tabla de prompts: lo que se guarda es el campo real del producto, y para la Server Action un valor sugerido y uno escrito a mano son indistinguibles.
+
+**Alternatives:** (a) Un asistente conversacional en el panel: convierte una tarea de 40 segundos en una conversación, y ninguna decisión de esta tienda mejora por charlar. (b) Guardar la sugerencia en columnas propias para «comparar después»: duplica el dato y crea dos verdades sobre lo mismo. (c) Dejar que la IA publique si su confianza es alta: la confianza de un modelo no es una garantía comercial, y publicar es lo único irreversible de cara al cliente.
+
+**Consequences:** medido después, mismo dispositivo y mismo build: la pantalla de alta pasa de **13 campos a 4** (`name`, `categoryId`, `shortDescription`, `description`), gana el control de archivo, la zona de foto queda a **297 px** —antes del primer campo, que está a 603— y la página cabe en **1223 px**. `/admin` gana la acción primaria «+ Añadir producto» dentro de la primera pantalla. Precio, stock y tallas **no entran** en el alta: viven en las variantes y se deciden después.
+
+## DEC-084 — La IA no puede escribir nada, y eso lo garantiza el código que NO existe
+
+**Status:** Accepted *(Incremento 20, sin migraciones, 2026-09-11)*
+
+**Context:** Una Server Action es un endpoint POST público. Si la que habla con el proveedor de IA pudiera además escribir en la base de datos, la frontera entre «proponer» y «hacer» dependería de que nadie se confundiera al editarla.
+
+**Decision:**
+
+- **`analyzeProductPhotoAction` no importa ningún cliente de escritura.** Ni `supabase/server`, ni `supabase/admin`, ni `.insert(`, ni `.rpc(`, ni `revalidatePath`. No recibe ningún id de producto. Su único retorno es una sugerencia. **Hay un test que lee el archivo y falla si aparece cualquiera de esas cosas.**
+- **`requireAdmin()` va lo primero**, antes incluso de leer la imagen del formulario: sin eso, cualquiera podría gastar la cuota del proveedor mandando fotos. Un test comprueba el orden.
+- **La imagen se valida por magic bytes antes de salir del servidor**, con la misma función que el catálogo (`checkImageUpload`). Ni `File.type` ni la extensión deciden qué se manda.
+- **Lo que sale del proyecto está acotado por el tipo**: los bytes de UNA fotografía que el administrador acaba de elegir, más las categorías y los colores, que son públicos y se pintan en la tienda. `AssistantContext` **no tiene forma** de contener un cliente, un pedido, un teléfono, un email ni un proveedor. Un test falla si esas palabras aparecen en la action.
+- **No se almacena el prompt ni la respuesta.** La sugerencia vive en la pantalla hasta que el administrador decide.
+- **La clave sale del entorno** (`ANTHROPIC_API_KEY`, sin `NEXT_PUBLIC_`), el adaptador es `server-only` y al cliente solo viaja un booleano. Un test comprueba que no hay ninguna clave escrita en el código.
+
+**Alternatives:** (a) Reutilizar una action del catálogo añadiéndole un modo «sugerir»: una sola función que a veces escribe y a veces no es exactamente el error que esto evita. (b) Llamar al proveedor desde el navegador: expone la clave. (c) Confiar en la revisión humana del diff: no sobrevive a un refactor.
+
+**Consequences:** la prohibición del punto 15 del encargo —publicar, cambiar precios, cambiar stock, borrar productos, tocar pedidos, modificar configuración, mandar WhatsApp— no está escrita como una comprobación en tiempo de ejecución: está garantizada porque **el código que haría falta no está importado**, y hay tests que lo mantienen así.
+
+⚠️ **Un archivo con `"use server"` solo puede exportar funciones async.** Exportar desde `ai-actions.ts` la constante del estado inicial reventaba el módulo en el servidor —«A "use server" file can only export async functions, found object»— y, con el grafo roto, el formulario de crear producto **no llegaba a enviarse**: ni error en pantalla, ni navegación, ni producto. Por eso `ASSIST_IDLE` vive en `lib/ai/assist-state.ts`. Medido sobre el build servido.
+
+## DEC-085 — El panel enseña lo que hay que hacer, no lo que el sistema sabe hacer
+
+**Status:** Accepted *(Incremento 20, sin migraciones, 2026-09-11)*
+
+**Context:** medido a 390×844: los ocho enlaces del menú, todos con el mismo peso, ocupaban **tres filas (68→164 px)** y el contenido de cualquier pantalla del panel empezaba a **245 px** — casi un tercio de la altura útil gastada en recordar todo lo que el sistema es capaz de hacer. En el inicio, tres de las cuatro secciones existían solo para decir que no había nada que hacer.
+
+**Decision:**
+
+- **Un bloque sin contenido no se pinta.** «Ninguna variante activa está por debajo de su umbral» y «todavía no ha entrado ningún pedido» desaparecen: no le sirven a nadie para hacer nada. La excepción es la cola de pedidos, donde **el vacío es la información** («ningún pedido pendiente de atender») y es la pregunta que trae al administrador a esta pantalla.
+- **El menú se separa por frecuencia de uso real**, no por área del sistema: *operar* (inicio, pedidos, catálogo, inventario) siempre visible; *configurar* (categorías, colores y tallas, home, ajustes) dentro de un `<details>`. **No se ha quitado ninguna ruta.** Es HTML puro: sin estado, sin efecto, sin JavaScript.
+- **`/admin/ajustes` sigue siendo configuración y no se mezcla con la creación.**
+- **Sin métricas de vanidad**: ni conversión, ni ingresos, ni CAC, ni ROAS, ni embudos, ni gráficas. Ninguna decisión de esta tienda se toma mirando una curva.
+
+**Alternatives:** (a) Quitar rutas del menú: se pierde acceso a pantallas que hacen falta al montar la tienda. (b) Abrir el `<details>` en escritorio forzando `::details-content`: depende de cómo lo implemente cada motor, y un enlace inalcanzable por un detalle de CSS es peor que un clic de más. (c) Dejar las secciones vacías «para que se vea que el sistema las vigila»: es justo lo que empujaba el único aviso real fuera de la pantalla.
+
+**Consequences:** medido después: el menú pasa de **3 filas a 1** (4 enlaces visibles, el resto a un clic), el contenido empieza a **197 px** en vez de 245, y el inicio solo enseña secciones con algo dentro. El enlace de marca del panel, que medía **28 px**, pasa a 44. TTFB mediano de `/admin` 181 ms y FCP 484 ms sobre el build servido.

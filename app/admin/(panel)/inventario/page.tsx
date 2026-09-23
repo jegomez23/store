@@ -68,8 +68,8 @@ export default async function AdminInventoryPage(
           Inventario
         </h1>
         <p className="text-xs text-gray-400">
-          Todas las variantes del mercado. Escribe las unidades que entran y
-          aplica una sola vez.
+          Escribe las unidades que hay ahora de cada variante y guarda por
+          producto. «Agotar» la deja en 0 al instante.
         </p>
       </header>
 
@@ -80,14 +80,14 @@ export default async function AdminInventoryPage(
           ) : null}
           <label htmlFor="q" className="sr-only">
             {/* TODO(i18n) */}
-            Buscar por SKU o producto
+            Buscar por producto, SKU, proveedor o referencia externa
           </label>
           <input
             id="q"
             name="q"
             type="search"
             defaultValue={query ?? ""}
-            placeholder="SKU, camiseta…"
+            placeholder="Camiseta, ABC-123, Proveedor A…"
             className="h-11 w-full max-w-xs rounded-md border border-line bg-white px-3 text-base text-black outline-none focus-visible:border-black md:text-sm"
           />
           <button
@@ -143,19 +143,19 @@ async function InventoryList({
   page: number;
 }) {
   const market = await getActiveMarket();
-  const { rows, count } = await listInventory(market, { filter, query, page });
+  const { products, count } = await listInventory(market, { filter, query, page });
   const pages = Math.max(1, Math.ceil(count / INVENTORY_PAGE_SIZE));
 
-  if (rows.length === 0) {
+  if (products.length === 0) {
     return (
       <p className="rounded-md border border-line bg-cream px-4 py-8 text-center text-sm text-gray-700">
         {/* TODO(i18n) */}
-        {filter === "agotadas"
-          ? "Ninguna variante está agotada."
-          : filter === "bajo"
-            ? "Ninguna variante está por debajo de su umbral."
-            : query
-              ? "Ninguna variante coincide con la búsqueda."
+        {query
+          ? "Ningún producto coincide con la búsqueda."
+          : filter === "agotadas"
+            ? "Ninguna variante está agotada."
+            : filter === "bajo"
+              ? "Ninguna variante está por debajo de su umbral."
               : "Todavía no hay variantes en este mercado."}
       </p>
     );
@@ -165,15 +165,11 @@ async function InventoryList({
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
         {/* TODO(i18n) */}
-        {count} {count === 1 ? "variante" : "variantes"} · mercado {market.id}
+        {count} {count === 1 ? "producto" : "productos"} · mercado {market.id}
         {pages > 1 ? ` · página ${page} de ${pages}` : ""}
       </p>
 
-      <InventoryTable
-        rows={rows}
-        currencyCode={market.currencyCode}
-        locale={market.locale}
-      />
+      <InventoryTable products={products} />
 
       {pages > 1 ? (
         <nav

@@ -6,8 +6,12 @@
  * productos, matriz de variantes ni subida de imágenes: eso sigue en
  * `05-ADMIN.md` §4.1 como pendiente, no como implementado.
  *
- * Sin I/O ni imports en runtime: ejecutable con `node --test` (DEC-025).
+ * Sin I/O ni imports en runtime: ejecutable con `node --test` (DEC-025). El
+ * único import es `../whatsapp/phone.ts` —relativo y con extensión, como el
+ * resto de módulos que corren bajo `node --test`—, que también es puro.
  */
+
+import { isPlaceholderWhatsAppNumber } from "../whatsapp/phone.ts";
 
 export const PRODUCT_STATUSES = ["draft", "active", "archived"] as const;
 
@@ -88,6 +92,16 @@ export function parseWhatsAppNumber(
     return {
       ok: false,
       error: "El número debe tener entre 6 y 20 dígitos, con prefijo de país.",
+    };
+  }
+  // Incremento 10: guardar el placeholder del seed es guardar «sin configurar»,
+  // y desde DEC-065 eso deja la tienda sin poder vender. Se rechaza aquí para
+  // que nadie lo reintroduzca creyendo que deja el sistema en un estado válido.
+  if (isPlaceholderWhatsAppNumber(digits)) {
+    return {
+      ok: false,
+      error:
+        "Ese es el número de ejemplo con el que arranca la tienda, no uno real. Escribe el número de WhatsApp al que quieres que te lleguen los pedidos.",
     };
   }
   return { ok: true, value: digits };

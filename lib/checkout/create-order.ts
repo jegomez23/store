@@ -37,6 +37,7 @@ interface RawOrder {
   subtotal: number | string;
   discount_total: number | string;
   shipping_total: number | string;
+  shipping_method_name: string | null;
   total: number | string;
   items: RawOrderItem[];
   reused: boolean;
@@ -81,8 +82,14 @@ export async function createOrder(
     p_customer_phone: input.customer.phone,
     p_customer_name: input.customer.name,
     p_client_request_id: input.clientRequestId,
+    // Solo el ID. El precio del envío y su umbral los lee create_order de
+    // shipping_methods: aquí no viaja ningún importe (incremento 8).
+    p_shipping_method_id: input.shippingMethodId,
     // Se omite en vez de mandar null: el DEFAULT de la función ya es null.
     p_source_url: input.sourceUrl,
+    // Atribución ya saneada (incremento 14). `create_order` la vuelve a filtrar
+    // por la misma lista blanca: aquí no se confía, se ahorra viaje.
+    p_attribution: input.attribution ?? undefined,
   });
 
   if (error) {
@@ -116,6 +123,7 @@ export async function createOrder(
       subtotal: toNumber(data.subtotal),
       discountTotal: toNumber(data.discount_total),
       shippingTotal: toNumber(data.shipping_total),
+      shippingMethodName: data.shipping_method_name ?? null,
       total: toNumber(data.total),
       items: data.items.map((item) => ({
         variantId: item.variant_id,

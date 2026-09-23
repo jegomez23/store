@@ -103,6 +103,26 @@ describe("parseWhatsAppNumber", () => {
     assert.equal(parseWhatsAppNumber("sin digitos").ok, false);
     assert.equal(parseWhatsAppNumber("9".repeat(21)).ok, false);
   });
+
+  test("rechaza el placeholder del seed (incremento 10, DEC-065)", () => {
+    // Guardarlo es guardar «sin configurar», y desde DEC-065 eso deja la
+    // tienda sin poder vender. Se rechaza en la escritura para que nadie lo
+    // reintroduzca creyendo que deja el sistema en un estado válido.
+    const result = parseWhatsAppNumber("34600000000");
+    assert.equal(result.ok, false);
+    assert.match((result as { error: string }).error, /ejemplo/i);
+    // Y también escrito como lo teclearía una persona.
+    assert.equal(parseWhatsAppNumber("+34 600 00 00 00").ok, false);
+  });
+
+  test("un número real que empieza por 600 SIGUE siendo válido", () => {
+    // Control: la regla es «el valor del seed», no «los números que parecen
+    // falsos». Inventar la segunda habría roto números reales.
+    assert.deepEqual(parseWhatsAppNumber("+34 600 00 00 01"), {
+      ok: true,
+      value: "34600000001",
+    });
+  });
 });
 
 describe("isLowStock", () => {

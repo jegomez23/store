@@ -77,9 +77,11 @@ CHECK: profundidad máx. 2 niveles (validar en app + constraint opcional vía tr
 | id | uuid PK | |
 | name | text NOT NULL | "Negro" |
 | slug | text NOT NULL UNIQUE | |
-| hex_code | char(7) NOT NULL | swatch UI |
+| hex_code | char(7) NOT NULL | swatch UI. **CHECK `colors_hex_code_format` (migración `0034`): `^#[0-9A-Fa-f]{6}$`.** Sin él, `char(7)` RELLENA con espacios en vez de rechazar: `"rojo"` se guardaba como `'rojo   '` (reproducido con la sesión de un admin antes de la 0034) |
 | sort_order | int NOT NULL DEFAULT 0 | |
-| is_active | boolean NOT NULL DEFAULT true | |
+| is_active | boolean NOT NULL DEFAULT true | `false` = retirado: deja de ofrecerse para variantes NUEVAS, las existentes lo conservan |
+
+⚠️ **`name` NO es único; `slug` sí.** Dos colores homónimos con distinto slug son legales (verificado contra el proyecto real). La única defensa contra dos «Azul» indistinguibles en la matriz es que la Server Action **deriva el slug del nombre** cuando el admin lo deja vacío: dos nombres iguales dan el mismo slug y PostgreSQL lo rechaza con 23505. No se añadió constraint sobre `name`.
 
 ### 2.5 `sizes` (global)
 | Columna | Tipo | Notas |
@@ -90,7 +92,17 @@ CHECK: profundidad máx. 2 niveles (validar en app + constraint opcional vía tr
 | sort_order | int NOT NULL DEFAULT 0 | orden lógico XS→XL, 36→46 |
 | is_active | boolean NOT NULL DEFAULT true | |
 
-UNIQUE(label, size_group).
+UNIQUE(label, size_group). **`sizes` NO tiene `slug`**: su identidad es `(label, size_group)`, y la misma etiqueta en otro grupo es legal (verificado: `"44"` en `apparel` y en `footwear` conviven).
+
+**Ambas tablas son GLOBALES: no tienen `market_id`** (verificado contra el OpenAPI del proyecto real, no leído de la migración). Por eso sus policies de admin son `is_admin()` a secas, sin `is_active_market`, y por eso `app/admin/(panel)/atributos/actions.ts` no resuelve mercado: no hay ninguno que decidir. Hay un test de integración que **afirma** que `market_id` no existe, para que añadirlo obligue a revisar esa decisión.
+
+**Se administran desde `/admin/atributos`** (Fase 9.5, incremento 6). Antes, añadir un color exigía un `INSERT` a mano: era el único paso del alta de un producto que obligaba a salir del panel.
+
+**Retirar vs eliminar** — lo decide PostgreSQL, no la interfaz:
+
+- `is_active = false` es siempre seguro. La variante que ya lo usa conserva su color y su talla (verificado); lo que desaparece es la opción para crear variantes nuevas, y **eso lo impone `admin_create_variant_matrix` desde la 0034**, no el filtro de `listColors()`. Antes de la 0034 un POST directo a la RPC creaba variantes con atributos retirados (reproducido: `{"created":1}`).
+- `DELETE` de un valor **en uso** lo rechaza la FK con **23503** (`product_variants_color_id_fkey` / `_size_id_fkey`, sin `ON DELETE`), y la variante queda intacta (verificado). Se ofrece igualmente y el error se traduce a un mensaje que dice qué hacer.
+- **Renombrar no toca el historial**: `order_items` guarda `color_name` y `size_label` como snapshot en el momento de la compra. Verificado con un pedido real: tras renombrar, la línea del pedido sigue diciendo lo que se vendió y la variante viva sí muestra el nombre nuevo.
 
 ### 2.6 `products`
 | Columna | Tipo | Notas |
@@ -105,6 +117,7 @@ UNIQUE(label, size_group).
 | materials | text | |
 | care_instructions | text | |
 | shipping_info_override | text | si NULL usa info del mercado |
+| supplier | text CHECK (NULL o no en blanco y ≤ 120) | **Incremento 13, migración `0039`.** De dónde viene el artículo. Texto libre, **sin tabla de proveedores** y **sin UNIQUE**. Dato INTERNO: `lib/data/products.ts` no lo pide **y desde la `0044` `anon` tampoco tiene GRANT para pedirlo** (401 · 42501). Antes solo se cumplía lo primero |
 | status | text NOT NULL DEFAULT 'draft' CHECK in ('draft','active','archived') | |
 | is_featured | boolean NOT NULL DEFAULT false | |
 | is_new | boolean NOT NULL DEFAULT false | |
@@ -134,6 +147,14 @@ WHERE is_new AND status='active' AND deleted_at IS NULL;
 | blur_data_url | text NULL | **Fase 9, migración `0022`.** Placeholder blur: data URI de un WebP de 16 px (~66 bytes) que genera `sharp` en la subida. CHECK: prefijo `data:image/webp;base64,` y longitud 32–4000. **Jamás se acepta del cliente** (DEC-040). `NULL` = imagen anterior a Fase 9, se pinta sin placeholder |
 | created_at | timestamptz | |
 
+**No hay borrado lógico ni `is_active`**: una imagen existe o no existe (verificado contra el proyecto real). `product_id` es `ON DELETE CASCADE`, así que borrar un producto en duro se lleva sus filas — comprobado.
+
+⚠️ **`url` es NOT NULL pero ADMITE la cadena vacía.** Verificado contra el proyecto real: `{"url":""}` devuelve 201. No hay ninguna hoy. Importa porque el renderizador público (`resolveImageUrl` → `if (!path) return null` → `RemoteImage` → `MockImage`) trata una url vacía **exactamente igual que la ausencia de imagen**: recuadro gris. Por eso el detector de "publicados sin foto" descarta esas filas en vez de limitarse a contar (ver `05-ADMIN.md` §4.1bis).
+
+⚠️ **UNA FILA NO ES UNA FOTO** (incremento 10, DEC-066). Nada obliga a que el objeto al que apunta `url` exista en el bucket. Fue el estado real de esta tienda hasta la migración `0037`: **4 filas, 0 objetos**, con `/_next/image` devolviendo 400 en las cuatro, el HTML servido llevando un `<img>` roto —el fallback a `MockImage` es `onError` de CLIENTE— y `og:image`/JSON-LD sirviendo esa URL de 400. La `0037` borra las filas cuyo objeto no existe (solo con `url` NO vacía: la vacía es territorio de P2) y añade el detector permanente `admin_products_with_broken_images(text)`.
+
+**`admin_products_with_broken_images(p_market_id text)`** — `SECURITY DEFINER` **obligado**: el dato vive en `storage.objects`, que PostgREST no expone y tiene RLS propia. Por eso la puerta `public.is_admin()` va **dentro del WHERE**, y un no-admin recibe **cero filas, no un error**. Filtra además por `is_active_market` (DEC-035) y por `deleted_at is null`. Una sola consulta: cruzarlo desde TypeScript sería N+1 y exigiría `service_role`. **El seed ya no inserta filas de `product_images`**, y hay un test que falla si vuelven.
+
 ### 2.8 `product_variants`
 | Columna | Tipo | Notas |
 |---|---|---|
@@ -147,17 +168,31 @@ WHERE is_new AND status='active' AND deleted_at IS NULL;
 | stock | int NOT NULL DEFAULT 0 CHECK (stock >= 0) | |
 | low_stock_threshold | int NOT NULL DEFAULT 3 | "Últimas unidades". **Editable desde el panel desde la Fase 9.5** |
 | is_low_stock | boolean GENERADA | **Fase 9.5, migración `0024`.** `stock <= low_stock_threshold`, calculada por PostgreSQL. **No se puede escribir** (verificado: PostgreSQL lo rechaza incluso con service role). Existe porque PostgREST no sabe comparar dos columnas de la misma fila |
+| supplier_ref | text CHECK (NULL o no en blanco y ≤ 120) | **Incremento 13, migración `0039`.** La referencia con la que el proveedor nombra ESTA variante, que es el nivel al que llega la disponibilidad. **Se guarda tal cual se escribe** (`abc-123` no se convierte en `ABC123`). **Sin UNIQUE:** no identifica la variante —eso lo hace el `sku`—, la señala. **No viaja al pedido:** `order_items` no la copia. **Privada desde la `0044`:** `anon` no tiene GRANT de lectura, así que no basta con que la ficha no la pinte |
 | is_active | boolean NOT NULL DEFAULT true | |
 | created_at / updated_at | timestamptz | `updated_at` es además el **testigo del bloqueo optimista** de la corrección absoluta de stock (DEC-047). Lo sella el trigger `set_updated_at`, que es `BEFORE UPDATE`: no se puede falsificar |
 
 UNIQUE(product_id, color_id, size_id).
 
-**Reposición de stock (Fase 9.5, DEC-047):** se hace por DELTA con
-`admin_restock_variants` (migración `0026`), no escribiendo un valor absoluto.
-`stock = stock + delta` dentro de la transacción es inmune a la pérdida de
-actualizaciones: verificado con diez reposiciones simultáneas de +4 sobre 0 →
-40. El `UPDATE` absoluto anterior daba 4. La CORRECCIÓN absoluta sigue
-existiendo en la ficha del producto, pero exige el testigo `updated_at`.
+**Edición de stock (Incremento 12, DEC-067):** el panel ESTABLECE el valor con
+`admin_set_variant_stock` (migración `0038`), porque la fuente externa dicta
+"hay 12" y no "han llegado 12". Dos modos explícitos: `set` —exige
+`expected_updated_at`, y un testigo caducado lanza `STOCK_CHANGED`
+**deshaciendo el lote entero**— y `exhaust`, que escribe 0, no admite testigo
+porque converge, y es idempotente. No toca `is_active` ni el estado del
+producto: agotado NO es despublicado.
+
+**Tope superior: NO existe en la base de datos.** `stock` es `int` con
+`check (stock >= 0)` y nada más. El 100000 que rechazan la 0038 y
+`lib/admin/catalog.ts` es una defensa de aplicación compartida por los dos
+caminos de escritura absoluta, no un constraint.
+
+**Reposición por DELTA (Fase 9.5, DEC-047):** `admin_restock_variants`
+(migración `0026`) sigue existiendo y probada —`stock = stock + delta` es
+inmune a la pérdida de actualizaciones: verificado con diez reposiciones
+simultáneas de +4 sobre 0 → 40—, pero **desde el incremento 12 ninguna pantalla
+la llama** (DEC-068): es la operación de una recepción de mercancía, no la de
+copiar un inventario dictado.
 
 > **Resuelto (DEC-019):** `color_id`/`size_id` nullable, tal como implementado. La validación de "cuándo son obligatorias según el grupo del producto" queda para el admin (Fase 7), no como CHECK de esquema.
 
@@ -205,11 +240,14 @@ UNIQUE(market_id, phone).
 | currency_code | char(3) NOT NULL | snapshot del market |
 | subtotal | numeric(12,2) NOT NULL | |
 | discount_total | numeric(12,2) NOT NULL DEFAULT 0 | |
-| shipping_total | numeric(12,2) NOT NULL DEFAULT 0 | |
+| shipping_total | numeric(12,2) NOT NULL DEFAULT 0 | **Desde el incremento 8 lo calcula `create_order`** desde el método elegido y su umbral. Antes era 0 siempre |
+| shipping_method_id | uuid FK → shipping_methods **ON DELETE SET NULL** | **Incremento 8.** Método elegido. NULL en pedidos anteriores y si el método se borra |
+| shipping_method_name | text NULL | **Incremento 8.** SNAPSHOT del nombre en el momento de la compra, igual que `order_items.product_name`: renombrar un método NO reescribe pedidos pasados (verificado) |
 | total | numeric(12,2) NOT NULL | |
 | shipping_address | jsonb | cuando exista checkout online |
 | notes | text | notas del cliente/admin |
 | source_url | text | URL desde la que se generó (producto/carrito) |
+| attribution | jsonb NULL | **Incremento 14, migración `0040`.** De qué anuncio vino el pedido: `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, `fbclid`, `landing_path`. **SIN PII por construcción**: `create_order` lee esa lista blanca y descarta el resto, así que ni un POST directo puede meter otra cosa. Se escribe UNA vez, en el INSERT; un reintento idempotente no la reescribe. `NULL` = tráfico directo. Detalle completo en `12-ATTRIBUTION.md` |
 | created_at / updated_at | timestamptz | |
 
 Índices: `(market_id, status)`, `(customer_id)`, `created_at DESC`.
@@ -268,7 +306,7 @@ Dos barreras propias sobre el patrón de `order_events`:
 
 > **`orders.shipping_address` y `orders.notes` NO se usan.** `create_order` no las escribe y el checkout solo captura teléfono y nombre. La dirección va en `order_notes` (DEC-049). No empieces a usarlas sin una decisión de negocio previa.
 
-### 2.14ter `admin_change_log` (append-only, Fase 9.5 · migración 0032)
+### 2.14ter `admin_change_log` (append-only, Fase 9.5 · migraciones 0032 + **0033**)
 | Columna | Tipo | Notas |
 |---|---|---|
 | id | bigint identity PK | |
@@ -281,36 +319,71 @@ Dos barreras propias sobre el patrón de `order_events`:
 | actor_id | uuid FK → profiles NOT NULL | de `auth.uid()`, jamás de un formulario |
 | created_at | timestamptz DEFAULT now() | |
 
-Índice `idx_admin_change_log_product (product_id, created_at desc)`. **Medido con 30.000 registros**: Index Scan, 5 buffers, 0,17 ms. Sin él: Seq Scan de 30.000 filas + top-N heapsort, 406 buffers, 4,09 ms.
+Índice `idx_admin_change_log_product (product_id, created_at desc)`: sirve al filtro y al orden a la vez, que es el único patrón de acceso ("las últimas N de este producto"). Con 30.000 filas —10.000 del producto consultado— la consulta real de la ficha se mide en **p50 130 ms contra 110 ms con la tabla vacía**, dentro del RTT de red: no escala con el tamaño de la tabla. *`EXPLAIN` no es obtenible contra el proyecto hosted (`PGRST107` al pedir el plan por PostgREST, sin `psql` ni driver); las cifras de plan que este documento traía antes son de una sesión anterior y no se han reverificado.*
 
-**Una sola policy, de SELECT.** No hay policy de INSERT/UPDATE/DELETE y además hay REVOKE: la única escritura es el trigger `log_admin_change` (SECURITY DEFINER, propiedad de `postgres`, que no está sujeto a RLS). Un admin no puede fabricar ni alterar un registro (DEC-056).
+**Una sola policy, y es de SELECT.** No hay policy de INSERT/UPDATE/DELETE y además hay REVOKE: la única escritura es el trigger `log_admin_change` (SECURITY DEFINER, propiedad de `postgres`, que no está sujeto a RLS). Un admin no puede fabricar ni alterar un registro (DEC-056).
 
-⚠️ **NO es un libro mayor de existencias.** Las ventas no entran (`auth.uid()` es NULL en el checkout) y las cancelaciones tampoco (`order_events` ya las cubre), así que el stock puede saltar de 24 a 20 sin una entrada. Es deliberado (DEC-055).
+**El SELECT hereda el mercado del producto** (0033, DEC-060): `is_admin() and exists (… products p where p.id = product_id and is_active_market(p.market_id))`, la misma forma que `admin_all_product_variants`. Antes decía solo `is_admin()`, y era la única tabla del admin que ignoraba DEC-035: con el mercado apagado el producto devolvía `[]` y su historial seguía siendo legible.
+
+⚠️ **NO es un libro mayor de existencias.** Ni las ventas ni las cancelaciones entran: `order_events` ya las cubre, así que el stock puede saltar de 24 a 20 sin una entrada. Es deliberado (DEC-055).
+
+⚠️ **El trigger escribe solo si `is_admin()`**, no solo si hay sesión (0033, DEC-059). Con la puerta anterior, un autenticado sin fila en `profiles` hacía saltar la FK de `actor_id` **dentro de `create_order`** y el pedido no llegaba a crearse: la auditoría podía denegar una venta. Además de `admin_update_order_status`, se excluye por ruta `create_order`. Si añades una función que mueva `product_variants.stock` por causa de un pedido, **añádela a esa lista**.
 
 ### 2.15 `shipping_methods`
 | Columna | Tipo | Notas |
 |---|---|---|
 | id | uuid PK | |
 | market_id | text FK → markets NOT NULL | |
-| name | text NOT NULL | "Envío nacional" |
+| name | text NOT NULL CHECK `btrim(name) <> ''` | "Envío nacional". **UNIQUE `(market_id, name)`** desde 0036: dos métodos con el mismo nombre son indistinguibles para quien elige en el checkout |
 | description | text | |
 | price | numeric(12,2) NOT NULL CHECK >= 0 | |
-| free_shipping_threshold | numeric(12,2) NULL | |
+| free_shipping_threshold | numeric(12,2) NULL CHECK `is null or >= 0` | **SE APLICA desde el incremento 8** (DEC-063): el envío es gratis cuando el **subtotal de productos** alcanza este valor (`>=`). NULL = el método no tiene umbral y siempre cuesta su precio. Contra el subtotal y no contra el total, porque el total incluye el envío. **El CHECK de no-negativo es de la 0036** (DEC-064): sin él, `subtotal >= -50` es siempre cierto y el envío sale gratis para toda la tienda, en silencio |
 | sort_order | int NOT NULL DEFAULT 0 | |
-| is_active | boolean NOT NULL DEFAULT true | |
+| is_active | boolean NOT NULL DEFAULT true | Retirar un método es desmarcarlo, no borrarlo |
 | created_at / updated_at | timestamptz | |
+
+⚠️ **Esta tabla decide lo que cobra la tienda.** `create_order` lee de aquí precio y umbral (DEC-063). Se administra desde `/admin/ajustes` (DEC-064); las escrituras van por el cliente de sesión con RLS, nunca por `service_role`, y `market_id` lo pone siempre el servidor.
+
+**Borrar un método es seguro**: `orders.shipping_method_id` es `on delete set null` y el pedido conserva `shipping_method_name`, `shipping_total` y `total` como snapshot. **No conviertas esa FK en `ON DELETE CASCADE`.**
 
 ### 2.16 `settings` (1:1 con market)
 | Columna | Tipo | Notas |
 |---|---|---|
 | market_id | text PK FK → markets | |
-| store_name | text NOT NULL | |
-| logo_url | text | bucket `content` |
+| store_name | text NOT NULL CHECK (no en blanco y ≤ 80) | **Identidad pública** desde el incremento 16: `<title>`, plantilla `%s · nombre`, logo del Header, Footer y `og:site_name` de la home y de cada ficha. CHECK de la `0042`, corregido por la `0043` |
+| tagline | text CHECK (NULL o no en blanco y ≤ 160) | **Incremento 16, migración `0042`.** La frase de la tienda: `<meta description>`, Open Graph, imagen de portada y Footer. **NULL = la tienda no publica descripción y no se pinta ninguna**; nunca se sustituye por un texto por defecto escrito en el código |
+| logo_url | text | **RUTA** dentro del bucket `content` (`logo/{market}-{uuid}.webp`), no una URL: la resuelve `getPublicUrl`, igual que `product_images.url`. Administrable desde `/admin/ajustes` desde el incremento 17 (DEC-074). `NULL` = la cabecera pinta el nombre escrito |
 | whatsapp_number | text NOT NULL | **fuente única del número** (E.164, sin "+": `573001234567`) |
-| contact_email | text | |
-| instagram_url / tiktok_url / facebook_url | text | |
+| contact_email | text CHECK (NULL o forma de email, ≤ 254) | CHECK de la `0042` |
+| instagram_url / tiktok_url / facebook_url | text CHECK (NULL o `https://…`, ≤ 300) | CHECK de la `0042`. **Solo https**: el valor acaba en un `href` del footer de todas las páginas, y con `javascript:` permitido el panel podía escribir un enlace ejecutable |
 | policies | jsonb NOT NULL DEFAULT '{}' | `{shipping, returns, privacy}` estructurados |
-| updated_at | timestamptz | |
+| updated_at | timestamptz | **NO concedida a `anon`** (migración 0041) |
+
+**Lectura pública por COLUMNA (Incremento 15, migración `0041`).** RLS decide qué
+FILAS se ven, no qué columnas, y medido: `GET /settings?select=*` con la anon key
+devolvía la fila entera. Hoy ninguna de esas columnas es secreta, así que no
+había fuga; lo que cambia la 0041 es que `anon` solo tiene `GRANT SELECT` sobre
+las columnas públicas concretas, de modo que **una columna nueva nace privada**
+(un Meta Pixel ID, un token de la Conversions API). `authenticated` conserva la
+lectura completa porque hoy el único autenticado posible es un administrador; si
+algún día hay cuentas de cliente, esto hay que revisarlo.
+
+Consumo real: `getSettings` (checkout y estado de venta) pide `store_name,
+whatsapp_number, contact_email`; `getStorefrontSettings` (footer, logo del Header
+y metadata, incremento 16) pide nombre, frase, email y las tres redes. Ninguna
+función pública pide la fila entera, y hay un test que lo comprueba.
+
+**Los límites viven en PostgreSQL desde la `0042` (DEC-071).** Medido antes: con
+la sesión de un admin y sin pasar por el panel, un `store_name` de tres espacios,
+un `instagram_url` con `javascript:` y un `contact_email` que no es un email
+devolvían **200 y se guardaban**. `validateSettingsInput` ya los rechazaba, pero
+esa validación protege un solo camino de escritura.
+
+⚠️ La `0042` usó `btrim(x) <> ''` para «no en blanco», y **`btrim` sin segundo
+argumento recorta solo el carácter espacio**: un tabulador y un salto de línea la
+pasaban. La `0043` lo sustituye por `x ~ '[^[:space:]]'`, que es el equivalente
+exacto de `String.prototype.trim()`. Úsalo siempre que la validación de
+TypeScript use `.trim()`.
 
 ### 2.17 `home_content`
 | Columna | Tipo | Notas |

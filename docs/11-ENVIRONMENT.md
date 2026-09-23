@@ -22,7 +22,15 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
 NEXT_PUBLIC_MARKET=ES
 # URL pública canónica (metadataBase, sitemap, OG)
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+
+# ── Asistente de catálogo (incremento 20) — OPCIONAL ─────
+# Sin ella el panel funciona igual: «Analizar foto» sale desactivado y la
+# ficha se rellena a mano. SOLO servidor, jamás NEXT_PUBLIC_.
+# ANTHROPIC_API_KEY=<api-key>
+# ANTHROPIC_PRODUCT_MODEL=claude-opus-5
 ```
+
+> **`ANTHROPIC_API_KEY` es la única variable OPCIONAL del proyecto.** Es lo único que falta para que el asistente de catálogo funcione de extremo a extremo; todo lo demás está implementado y probado. Mientras no exista, la pantalla de alta lo dice y no se simula ningún resultado (DEC-084, `docs/context/AI-DEVELOPMENT.md` §29).
 
 > Nota (Fase 4.5): las cuatro variables `NEXT_PUBLIC_*` son consumidas realmente por la aplicación y están verificadas contra un proyecto Supabase real. `SUPABASE_SERVICE_ROLE_KEY` puede estar presente en `.env.local`, pero **ningún código de aplicación la lee todavía** (`lib/supabase/admin.ts` no existe; se creará en Fase 7).
 

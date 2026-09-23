@@ -46,7 +46,7 @@ export default async function AdminOrdersPage(
           clave del fallback incluye los filtros para que cambiar de página o de
           estado vuelva a mostrarlo. */}
       <Suspense
-        key={`${params.status}-${params.query}-${params.page}`}
+        key={`${params.status}-${params.query}-${params.unusableQuery}-${params.page}`}
         fallback={<AdminSkeleton rows={6} />}
       >
         <OrdersResults params={params} />
@@ -57,7 +57,7 @@ export default async function AdminOrdersPage(
 
 async function OrdersResults({ params }: { params: OrderListParams }) {
   const market = await getActiveMarket();
-  const { orders, count } = await listOrders(market, params);
+  const { orders, count, partial } = await listOrders(market, params);
   const now = requestNow();
 
   const pages = totalPages(count);
@@ -70,12 +70,27 @@ async function OrdersResults({ params }: { params: OrderListParams }) {
           : `${count} ${count === 1 ? "pedido" : "pedidos"} · mercado ${market.id}`}
       </p>
 
+      {/* Un resultado recortado en silencio es peor que uno vacío: si la
+          búsqueda casó con más clientes de los que caben en una consulta, se
+          dice en vez de dar por completa una lista que no lo es. */}
+      {partial ? (
+        <p className="rounded-md border border-line bg-cream px-4 py-3 text-xs text-gray-700">
+          {/* TODO(i18n) */}
+          La búsqueda coincide con muchos clientes y puede faltar algún pedido.
+          Afina con el teléfono completo o con el número de pedido.
+        </p>
+      ) : null}
+
       {orders.length === 0 ? (
         <p className="rounded-md border border-line bg-cream px-4 py-8 text-center text-sm text-gray-700">
           {/* TODO(i18n) */}
-          {params.status || params.query
-            ? "Ningún pedido coincide con este filtro."
-            : "Todavía no hay pedidos. Aparecerán aquí en cuanto alguien complete el checkout."}
+          {params.unusableQuery
+            ? "Esa búsqueda no tiene nada que buscar: prueba con un número de pedido, un teléfono o un nombre."
+            : params.query
+              ? `Ningún pedido coincide con «${params.query}». Se ha buscado por número, teléfono y nombre.`
+              : params.status
+                ? "Ningún pedido coincide con este filtro."
+                : "Todavía no hay pedidos. Aparecerán aquí en cuanto alguien complete el checkout."}
         </p>
       ) : (
         <>

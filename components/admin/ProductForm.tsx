@@ -28,6 +28,13 @@ import type { AdminCategory } from "@/lib/data/admin/cms";
  *
  * Al crear no se pide estado: el producto nace `draft` y publicarlo es un acto
  * explícito y separado.
+ *
+ * INCREMENTO 20: el alta ya no entra por aquí. `/admin/catalogo/nuevo` monta
+ * `NewProductFlow` —foto primero y cuatro campos—, y este formulario queda como
+ * la EDICIÓN de una ficha que ya existe, que es donde sus trece campos tienen
+ * sentido porque cada uno lleva su dato dentro. La rama `product === null` y
+ * `createProductAction` **siguen funcionando**: es el alta sin foto, y no se
+ * retira una acción que funciona solo porque ninguna pantalla la monte hoy.
  */
 
 const INITIAL: CatalogActionState = { error: null, success: null };
@@ -109,6 +116,24 @@ export function ProductForm({
             rows={6}
             maxLength={PRODUCT_TEXT_LIMITS.description}
             defaultValue={product?.description ?? ""}
+          />
+        </Field>
+
+        {/*
+          Incremento 13. Va con los datos del producto y NO con el SEO: es
+          información interna de aprovisionamiento, no algo que el cliente lea.
+          Texto libre a propósito: no hay tabla de proveedores.
+        */}
+        <Field
+          label="Proveedor"
+          name="supplier"
+          hint="Interno: de dónde viene el artículo. No se muestra al cliente."
+        >
+          <TextInput
+            name="supplier"
+            maxLength={PRODUCT_TEXT_LIMITS.supplier}
+            defaultValue={product?.supplier ?? ""}
+            placeholder="Proveedor A"
           />
         </Field>
 

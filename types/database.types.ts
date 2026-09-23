@@ -449,6 +449,7 @@ export type Database = {
       }
       orders: {
         Row: {
+          attribution: Json | null
           channel: string
           client_request_fingerprint: string | null
           client_request_id: string | null
@@ -461,6 +462,8 @@ export type Database = {
           notes: string | null
           order_number: string
           shipping_address: Json | null
+          shipping_method_id: string | null
+          shipping_method_name: string | null
           shipping_total: number
           source_url: string | null
           status: string
@@ -469,6 +472,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          attribution?: Json | null
           channel: string
           client_request_fingerprint?: string | null
           client_request_id?: string | null
@@ -481,6 +485,8 @@ export type Database = {
           notes?: string | null
           order_number: string
           shipping_address?: Json | null
+          shipping_method_id?: string | null
+          shipping_method_name?: string | null
           shipping_total?: number
           source_url?: string | null
           status?: string
@@ -489,6 +495,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          attribution?: Json | null
           channel?: string
           client_request_fingerprint?: string | null
           client_request_id?: string | null
@@ -501,6 +508,8 @@ export type Database = {
           notes?: string | null
           order_number?: string
           shipping_address?: Json | null
+          shipping_method_id?: string | null
+          shipping_method_name?: string | null
           shipping_total?: number
           source_url?: string | null
           status?: string
@@ -521,6 +530,13 @@ export type Database = {
             columns: ["market_id"]
             isOneToOne: false
             referencedRelation: "markets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_shipping_method_id_fkey"
+            columns: ["shipping_method_id"]
+            isOneToOne: false
+            referencedRelation: "shipping_methods"
             referencedColumns: ["id"]
           },
         ]
@@ -580,6 +596,7 @@ export type Database = {
           size_id: string | null
           sku: string
           stock: number
+          supplier_ref: string | null
           updated_at: string
         }
         Insert: {
@@ -595,6 +612,7 @@ export type Database = {
           size_id?: string | null
           sku: string
           stock?: number
+          supplier_ref?: string | null
           updated_at?: string
         }
         Update: {
@@ -610,6 +628,7 @@ export type Database = {
           size_id?: string | null
           sku?: string
           stock?: number
+          supplier_ref?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -655,6 +674,7 @@ export type Database = {
           short_description: string | null
           slug: string
           status: string
+          supplier: string | null
           updated_at: string
         }
         Insert: {
@@ -675,6 +695,7 @@ export type Database = {
           short_description?: string | null
           slug: string
           status?: string
+          supplier?: string | null
           updated_at?: string
         }
         Update: {
@@ -695,6 +716,7 @@ export type Database = {
           short_description?: string | null
           slug?: string
           status?: string
+          supplier?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -860,6 +882,7 @@ export type Database = {
           market_id: string
           policies: Json
           store_name: string
+          tagline: string | null
           tiktok_url: string | null
           updated_at: string
           whatsapp_number: string
@@ -872,6 +895,7 @@ export type Database = {
           market_id: string
           policies?: Json
           store_name: string
+          tagline?: string | null
           tiktok_url?: string | null
           updated_at?: string
           whatsapp_number: string
@@ -884,6 +908,7 @@ export type Database = {
           market_id?: string
           policies?: Json
           store_name?: string
+          tagline?: string | null
           tiktok_url?: string | null
           updated_at?: string
           whatsapp_number?: string
@@ -979,7 +1004,22 @@ export type Database = {
         Returns: Json
       }
       admin_operations_summary: { Args: { p_market_id: string }; Returns: Json }
+      admin_products_with_broken_images: {
+        Args: { p_market_id: string }
+        Returns: {
+          image_id: string
+          image_url: string
+          is_primary: boolean
+          product_id: string
+          product_name: string
+          product_slug: string
+        }[]
+      }
       admin_restock_variants: {
+        Args: { p_items: Json; p_market_id: string }
+        Returns: Json
+      }
+      admin_set_variant_stock: {
         Args: { p_items: Json; p_market_id: string }
         Returns: Json
       }
@@ -1003,11 +1043,13 @@ export type Database = {
       }
       create_order: {
         Args: {
+          p_attribution?: Json
           p_client_request_id: string
           p_customer_name: string
           p_customer_phone: string
           p_items: Json
           p_market_id: string
+          p_shipping_method_id: string
           p_source_url?: string
         }
         Returns: Json

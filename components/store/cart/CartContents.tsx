@@ -6,13 +6,15 @@ import { Divider } from "@/components/ui/Divider";
 import { CartLineItem } from "@/components/store/cart/CartLineItem";
 import { useCart } from "@/lib/cart/context";
 import { formatPrice } from "@/lib/money/format";
+import { ShippingNote } from "@/components/store/ShippingNote";
+import type { ShippingSummary } from "@/lib/checkout/shipping-summary";
 
 /**
  * Cuerpo de `/carrito` (Fase 5). Client Component porque todo su estado vive
  * en localStorage vía `CartProvider`; el shell de la página (título, layout,
  * metadata) sigue siendo Server Component.
  */
-export function CartContents() {
+export function CartContents({ shipping }: { shipping: ShippingSummary }) {
   const {
     lines,
     totals,
@@ -117,12 +119,34 @@ export function CartContents() {
 
         <Divider />
 
+        {/*
+          ───────────────────────────────────────────────────────────────────
+          NO SE LLAMA «TOTAL» A UN SUBTOTAL (incremento 19)
+          ───────────────────────────────────────────────────────────────────
+          Medido: el carrito rotulaba «Total» y pintaba en ROJO —el color del
+          precio— una cifra que NO incluye el envío. Un carrito de 34,90 €
+          acababa cobrando 39,80 €, y el cliente lo descubría en el último
+          paso. Es la definición de «precio que cambia sin explicación».
+
+          El importe no se toca: lo que cambia es el rótulo, que ahora dice la
+          verdad, y la nota de envío de debajo, que sale de `shipping_methods`.
+          El total de verdad lo sigue calculando `create_order` (DEC-063).
+        */}
         <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-black">Total</span>
-          <span className="text-lg font-semibold text-red">
+          <span className="text-sm font-semibold text-black">
+            {/* TODO(i18n) */}
+            Subtotal
+          </span>
+          <span className="text-lg font-semibold text-black">
             {formatPrice(totals.subtotal, market.currencyCode, market.locale)}
           </span>
         </div>
+
+        <ShippingNote
+          summary={shipping}
+          currencyCode={market.currencyCode}
+          locale={market.locale}
+        />
 
         {/* Fase 6: el CTA lleva a /checkout, donde se recogen los datos de
             contacto. El carrito sigue sin conocer WhatsApp (DEC-007). */}

@@ -32,16 +32,37 @@ import { refreshSession, withSessionCookies } from "@/lib/supabase/proxy";
 
 const LOGIN_PATH = "/admin/login";
 
+/**
+ * Rutas del área administrativa accesibles SIN sesión (incremento 18).
+ *
+ * El matcher de este archivo es `/admin/:path*`, así que sin esta lista la
+ * recuperación de contraseña sería imposible por construcción: quien ha
+ * perdido la clave no tiene sesión, y el proxy lo mandaría al login justo
+ * cuando viene del enlace del email —perdiendo por el camino el token, que en
+ * el flujo por defecto de Supabase viaja en el FRAGMENTO de la URL—.
+ *
+ * Son rutas públicas por necesidad, no por descuido, y ninguna da acceso a
+ * nada: `/admin/reset-password` solo sirve para cambiar la contraseña de la
+ * cuenta que demuestre tener un token de recuperación válido, y quien entre
+ * después sigue pasando por `is_admin()` en el layout del panel.
+ */
+const PUBLIC_ADMIN_PATHS = new Set<string>([
+  LOGIN_PATH,
+  "/admin/recuperar",
+  "/admin/reset-password",
+  "/admin/auth/confirm",
+]);
+
 export async function proxy(request: NextRequest) {
   const { user, response } = await refreshSession(request);
 
-  const isLoginRoute = request.nextUrl.pathname === LOGIN_PATH;
+  const isPublicRoute = PUBLIC_ADMIN_PATHS.has(request.nextUrl.pathname);
 
-  // El login siempre es accesible. En particular NO se redirige desde aquí a
-  // un usuario con sesión: podría estar autenticado y no ser admin, y rebotar
-  // login → /admin → login sería un bucle infinito. Quien decide si esa
-  // identidad entra es el layout, que sí conoce `is_admin()`.
-  if (user || isLoginRoute) {
+  // El login y la recuperación siempre son accesibles. En particular NO se
+  // redirige desde aquí a un usuario con sesión: podría estar autenticado y no
+  // ser admin, y rebotar login → /admin → login sería un bucle infinito. Quien
+  // decide si esa identidad entra es el layout, que sí conoce `is_admin()`.
+  if (user || isPublicRoute) {
     return response;
   }
 

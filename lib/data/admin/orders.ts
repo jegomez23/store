@@ -1,10 +1,13 @@
 import { createClient } from "@/lib/supabase/server";
+import { describeAttribution } from "@/lib/attribution/attribution";
 import { requireAdmin } from "@/lib/admin/auth";
 import {
   OPEN_STATUSES,
   ORDERS_PAGE_SIZE,
   isOrderStatus,
+  orderSearchTokens,
   type OrderListParams,
+  type OrderSearchTokens,
   type OrderStatus,
 } from "@/lib/admin/orders";
 import type { ActiveMarket } from "@/lib/markets";
@@ -71,6 +74,56 @@ export interface AdminOrderListResult {
   orders: AdminOrderListItem[];
   /** Total de pedidos que casan con el filtro, no los de esta página. */
   count: number;
+  /**
+   * `true` si la búsqueda casó con MÁS clientes de los que caben en una URL
+   * (P3) y, por tanto, el resultado puede estar incompleto. La interfaz lo
+   * dice: un resultado recortado en silencio es peor que uno vacío.
+   */
+  partial?: boolean;
+}
+
+/**
+ * Los clientes de ESTE mercado cuyo nombre o teléfono casan con lo buscado.
+ *
+ * Es el primer paso del buscador (P3) y existe por una limitación REAL de
+ * PostgREST, comprobada contra el proyecto: **un `or=(…)` no admite columnas
+ * de un recurso embebido**. `or=(order_number.ilike.*x*,customer.name.ilike.*x*)`
+ * devuelve `PGRST100 · failed to parse logic tree`, porque el `.` de
+ * `customer.name` se lee como el separador del operador. Así que el cruce se
+ * hace en dos consultas: aquí los clientes, y en `listOrders` un `or` sobre
+ * columnas REALES de `orders` (`order_number` y `customer_id`).
+ *
+ * El tope de 200 no es un capricho: la lista de ids viaja dentro de la URL de
+ * la segunda consulta, y una URL no puede crecer sin límite. Quien llama sabe
+ * si se alcanzó, para poder decirlo en vez de fingir un resultado completo.
+ */
+const CUSTOMER_MATCH_LIMIT = 200;
+
+async function matchingCustomerIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  market: ActiveMarket,
+  tokens: OrderSearchTokens,
+): Promise<{ ids: string[]; truncated: boolean }> {
+  const clauses: string[] = [];
+  if (tokens.name) clauses.push(`name.ilike.*${tokens.name}*`);
+  // `customers.phone` se guarda SOLO con dígitos (`create_order`), así que se
+  // busca con los dígitos de lo escrito: pegar "+34 600 111 222" funciona.
+  if (tokens.digits) clauses.push(`phone.ilike.*${tokens.digits}*`);
+  if (clauses.length === 0) return { ids: [], truncated: false };
+
+  const { data, error } = await supabase
+    .from("customers")
+    .select("id")
+    .eq("market_id", market.id)
+    .or(clauses.join(","))
+    .limit(CUSTOMER_MATCH_LIMIT);
+
+  if (error) {
+    throw new Error(`No se pudieron buscar clientes: ${error.message}`);
+  }
+
+  const ids = (data ?? []).map((row) => row.id);
+  return { ids, truncated: ids.length === CUSTOMER_MATCH_LIMIT };
 }
 
 export async function listOrders(
@@ -78,6 +131,10 @@ export async function listOrders(
   params: OrderListParams,
 ): Promise<AdminOrderListResult> {
   if (!(await requireAdmin())) return { orders: [], count: 0 };
+
+  // Buscó algo que no deja nada utilizable (`%`, `***`). Cero resultados, y no
+  // el listado entero: eso se leería como "tu búsqueda lo ha encontrado todo".
+  if (params.unusableQuery) return { orders: [], count: 0 };
 
   const supabase = await createClient();
 
@@ -96,10 +153,36 @@ export async function listOrders(
   if (params.status) {
     query = query.eq("status", params.status);
   }
+
+  let truncatedCustomers = false;
+
   if (params.query) {
-    // `params.query` viene de `normalizeOrderQuery`, que ya eliminó `%`, `_`,
-    // `,` y `*` — los caracteres que cambiarían el significado del patrón.
-    query = query.ilike("order_number", `%${params.query}%`);
+    /*
+     * BUSCAR LAS TRES COSAS A LA VEZ, sin adivinar cuál escribió el admin.
+     *
+     * Una heurística ("si son dígitos es un teléfono") falla justo donde más
+     * duele: `000003` es a la vez la cola de un número de pedido y un trozo de
+     * teléfono. Se busca por los tres caminos y se devuelve la UNIÓN, que
+     * PostgreSQL da sin duplicados.
+     *
+     * Los tokens vienen de `sanitizeOrderSearch`, que ya quitó `%`, `_`, `*`,
+     * `,`, `(`, `)` y `.` — los caracteres que dejarían de ser un valor para
+     * pasar a ser estructura del `or=(…)`.
+     */
+    const tokens = orderSearchTokens(params.query);
+    const matched = await matchingCustomerIds(supabase, market, tokens);
+    truncatedCustomers = matched.truncated;
+
+    const clauses: string[] = [];
+    if (tokens.orderNumber) clauses.push(`order_number.ilike.*${tokens.orderNumber}*`);
+    if (matched.ids.length > 0) clauses.push(`customer_id.in.(${matched.ids.join(",")})`);
+
+    if (clauses.length === 0) {
+      // Nada que buscar por ningún camino: cero resultados sin ir a la BD otra
+      // vez. No se devuelve el listado entero, que sería lo peor de todo.
+      return { orders: [], count: 0 };
+    }
+    query = query.or(clauses.join(","));
   }
 
   const { data, error, count } = await query;
@@ -110,6 +193,7 @@ export async function listOrders(
 
   return {
     count: count ?? 0,
+    partial: truncatedCustomers,
     orders: (data ?? []).map((row) => ({
       id: row.id,
       orderNumber: row.order_number,
@@ -238,6 +322,12 @@ export interface AdminOrderDetail {
   status: OrderStatus;
   channel: string;
   sourceUrl: string | null;
+  /**
+   * Origen de marketing YA RESUMIDO para pintar (incremento 14):
+   * "instagram · paid · lanzamiento". `null` si el pedido fue directo. El JSON
+   * crudo no sale del data layer: el panel no es un visor de campos.
+   */
+  attributionLabel: string | null;
   /*
     NO hay campo `notes`. La columna `orders.notes` existe en el esquema desde
     la migración 0011, nadie la escribe nunca —`create_order` no la toca— y
@@ -250,6 +340,7 @@ export interface AdminOrderDetail {
   subtotal: number;
   discountTotal: number;
   shippingTotal: number;
+  shippingMethodName: string | null;
   total: number;
   customerName: string | null;
   customerPhone: string;
@@ -280,8 +371,9 @@ export async function getOrderByNumber(
   const { data, error } = await supabase
     .from("orders")
     .select(
-      `id, order_number, created_at, updated_at, status, channel, source_url,
+      `id, order_number, created_at, updated_at, status, channel, source_url, attribution,
        currency_code, subtotal, discount_total, shipping_total, total, customer_id,
+       shipping_method_name,
        customer:customers(name, phone, email),
        order_items(id, product_name, color_name, size_label, sku, unit_price, quantity, line_total, variant_id),
        order_events(id, from_status, to_status, note, created_at, actor_id),
@@ -320,10 +412,12 @@ export async function getOrderByNumber(
     status: toStatus(data.status),
     channel: data.channel,
     sourceUrl: data.source_url,
+    attributionLabel: describeAttribution(data.attribution),
     currencyCode: data.currency_code,
     subtotal: toNumber(data.subtotal),
     discountTotal: toNumber(data.discount_total),
     shippingTotal: toNumber(data.shipping_total),
+    shippingMethodName: data.shipping_method_name,
     total: toNumber(data.total),
     customerName: data.customer?.name ?? null,
     customerPhone: data.customer?.phone ?? "",

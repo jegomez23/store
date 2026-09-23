@@ -17,9 +17,12 @@ import type { ActiveMarket } from "@/lib/markets";
  */
 export function ProductChangeLog({
   entries,
+  hasMore,
   market,
 }: {
   entries: ChangeEntry[];
+  /** Hay cambios más antiguos que los que se pintan. Se DICE, no se esconde. */
+  hasMore: boolean;
   market: ActiveMarket;
 }) {
   if (entries.length === 0) {
@@ -74,6 +77,19 @@ export function ProductChangeLog({
           </li>
         ))}
       </ol>
+
+      {/*
+        Un "últimos 20" callado se lee como "esto es todo lo que pasó". Si hay
+        más, se dice; no hay paginación porque nadie ha pedido todavía navegar
+        el historial, y prometer una lista completa que no se sirve es peor.
+      */}
+      {hasMore ? (
+        <p className="text-xs text-gray-400">
+          {/* TODO(i18n) */}
+          Se muestran los {entries.length} cambios más recientes. Hay más
+          anteriores, que hoy solo pueden consultarse en la base de datos.
+        </p>
+      ) : null}
     </div>
   );
 }

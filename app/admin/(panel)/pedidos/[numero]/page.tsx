@@ -178,6 +178,19 @@ export default async function AdminOrderDetailPage(
               </a>
             </Row>
             <Row label="Email">{order.customerEmail ?? "—"}</Row>
+            {/*
+              Incremento 14. Una línea, no un visor de JSON: lo único que el
+              administrador necesita saber es si este pedido lo trajo un
+              anuncio y cuál. "—" significa tráfico directo u orgánico, que es
+              una respuesta tan válida como cualquier otra.
+            */}
+            <Row label="Campaña">
+              {order.attributionLabel ? (
+                <span className="text-gray-700">{order.attributionLabel}</span>
+              ) : (
+                "— directo"
+              )}
+            </Row>
             <Row label="Origen">
               {order.sourceUrl ? (
                 <span className="break-all text-xs text-gray-700">
@@ -200,8 +213,21 @@ export default async function AdminOrderDetailPage(
             <Row label="Descuento">
               {order.discountTotal > 0 ? `−${money(order.discountTotal)}` : "—"}
             </Row>
+            {/*
+              MÉTODO Y COSTE JUNTOS (incremento 8): el administrador tiene que
+              poder decir "esto se envía" o "esto lo recoge" sin abrir el chat.
+              Ambos salen del pedido guardado, no del catálogo vivo: si el
+              método se renombra, aquí sigue el nombre con el que se vendió.
+            */}
+            <Row label="Entrega">
+              {order.shippingMethodName ?? (
+                <span className="text-gray-400">Sin método (pedido anterior)</span>
+              )}
+            </Row>
             <Row label="Envío">
-              {order.shippingTotal > 0 ? money(order.shippingTotal) : "—"}
+              {order.shippingMethodName === null && order.shippingTotal === 0
+                ? "—"
+                : money(order.shippingTotal)}
             </Row>
             <Row label="Total">
               <strong className="text-red">{money(order.total)}</strong>

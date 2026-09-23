@@ -6,13 +6,273 @@
 
 ## STATUS
 
-**FASE 9.5 — Panel Operativo · Incrementos 1–4 y 5A/5B/5C: COMPLETADOS**
+**FASE 9.5 — Panel Operativo · Incrementos 1–4, 5A/5B/5C, 6, P2, P3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19 y 20: COMPLETADOS**
 
-Última actualización: 2026-09-03
+Última actualización: 2026-09-11
 
-Fase 9 quedó completada salvo la auditoría CWV. Fase 9.5 añade lo que hace el panel *operable a diario*: contacto por WhatsApp desde el pedido (Inc. 1), data layer sin descargas completas (Inc. 2), centro operativo (Inc. 3), inventario con reposición atómica (Inc. 4), **el pedido como expediente** (5A), **publicación consistente** (5B) y **trazabilidad administrativa** (5C).
+Fase 9 quedó completada salvo la auditoría CWV. Fase 9.5 añade lo que hace el panel *operable a diario*: contacto por WhatsApp desde el pedido (Inc. 1), data layer sin descargas completas (Inc. 2), centro operativo (Inc. 3), inventario con reposición atómica (Inc. 4), **el pedido como expediente** (5A), **publicación consistente** (5B), **trazabilidad administrativa** (5C), **colores y tallas administrables** (Inc. 6), el **detector de publicados sin foto** (P2), la **búsqueda de pedidos por teléfono y nombre** (P3), la **subida de varias fotos** (Inc. 7), el **envío con total fiable** (Inc. 8), los **métodos de entrega administrables** (Inc. 9), el **bloqueo de venta sin WhatsApp real + el detector de fotos rotas** (Inc. 10) y, con los incrementos **16 y 17**, la **identidad de la tienda fuera del código** —nombre, frase y **logo**—, un **checkout que avisa antes de que el cliente rellene nada**, un **estado de venta accionable** y, con los incrementos **18 y 19**, la **recuperación de contraseña del administrador** y un **catálogo preparado para vender**.
 
-**Estado global tras 5C:** `npm run lint` limpio · `npx tsc --noEmit` limpio · `npm test` **623/623** · `npm run build` correcto · BD en el baseline exacto · **sin commits**.
+Con el incremento **20**, el panel deja de enseñar todo lo que el sistema sabe hacer y enseña lo que hay que hacer ahora: **dar de alta un producto empezando por la foto**, con una capa de IA que **propone y nunca decide**.
+
+**Estado global tras el incremento 20:** lint limpio · tsc limpio · **npm test 1114/1114** · build correcto · **E2E 37/37 + 12/12 (inc. 20) + 44/44 (inc. 19) + 45/45 (inc. 18) + 78/78 (inc. 17) + 69/69 (inc. 16) + 30/30 (inc. 15) + 25/25 (inc. 14) + 30/30 (inc. 13) + 36/36 (inc. 12)** en Chrome real sobre el build servido · BD y Storage en el baseline verificado · **sin commits**.
+
+---
+
+## Incremento 20 — Admin minimalista y alta de producto asistida: COMPLETADO
+
+**Qué se midió antes** (Chrome 153, 390×844, build servido):
+
+| Medida | Antes | Después |
+|---|---|---|
+| Campos visibles en `/admin/catalogo/nuevo` | **13** | **4** |
+| Control de archivo en el alta | **ninguno** | sí, y es lo primero (297 px) |
+| Alto de la pantalla de alta | ~2,5 pantallas | 1223 px |
+| Acción «añadir producto» en `/admin` | **no existía** | primaria, primera pantalla |
+| Secciones del inicio que decían «no hay nada que hacer» | **3 de 4** | 0 |
+| Filas del menú del panel | **3** (68→164 px) | **1** (4 enlaces; 4 más a un clic) |
+| Inicio del contenido en cualquier pantalla del panel | 245 px | 197 px |
+| Enlace de marca del panel (objetivo táctil) | **28 px** | 44 px |
+
+**Qué se hizo:**
+
+- **Alta de producto foto primero** (`components/admin/NewProductFlow.tsx`): la foto, cuatro campos imprescindibles (nombre, categoría, descripción corta, descripción) y el resto dentro de «Información avanzada» plegada. El producto se crea **en borrador** y **con su foto ya subida en el mismo envío** (`createProductWithPhotoAction`), reutilizando la tubería de imágenes del catálogo. Precio, stock y tallas **no se piden aquí**: viven en las variantes.
+- **Capa de asistencia por IA** (`lib/ai/`): un puerto `ProductAssistant`, un adaptador sobre la API de Claude y una Server Action que **no puede escribir nada**. La IA propone nombre, descripción, categoría y color; lo que no se ve en una foto **no existe en el tipo de la sugerencia** (DEC-083, DEC-084).
+- **Panel simplificado** (DEC-085): los bloques sin contenido dejan de pintarse, el menú se separa entre operar y configurar sin perder ninguna ruta, y no hay ni una métrica de vanidad ni una gráfica.
+
+**Dependencia nueva, justificada y registrada:** `@anthropic-ai/sdk` ^0.125.0 (12 MB en `node_modules`, **0 bytes en el bundle de cliente**: el adaptador es `server-only`). Se usa por el tipado de la salida estructurada, los errores tipados y el manejo de imágenes base64; hacerlo con `fetch` a mano habría significado reescribir eso peor.
+
+⚠️ **La integración con el proveedor NO está verificada de extremo a extremo, y no se va a decir que sí.** Este entorno **no tiene `ANTHROPIC_API_KEY`**. Lo verificado en Chrome real es: (a) sin clave, el botón sale desactivado, la pantalla lo explica y **crear un producto funciona igual**; (b) con una clave que existe pero no vale, la petición **sale de verdad** hacia el proveedor, vuelve un 401, la pantalla dice «El asistente no ha podido ayudar esta vez. Rellena la ficha a mano.» sin jerga ni códigos, no se rellena ningún campo a medias y el formulario sigue guardando. **Lo que falta por comprobar es la calidad de una sugerencia real**, y para eso hace falta una clave válida de Juan.
+
+**Verificación:** `npm test` **1114/1114** (26 nuevos: lista blanca y negra, validación contra el catálogo real, «no determinado», respuestas rotas, e invariantes de seguridad leídas del propio código) · **E2E 37/37** del flujo completo de alta con foto real subida a Storage · **E2E 12/12** del asistente caído · **perf 9/9** (`/admin` TTFB 181 ms, FCP 484 ms) · lint, tsc y build verdes · BD y Storage devueltos al baseline (4 productos, 0 imágenes, 0 pedidos, 1 perfil, 1 usuario de Auth, bucket vacío) · **sin commits**.
+
+---
+
+## Incremento 19 — Catálogo preparado para vender: COMPLETADO
+
+**Cero migraciones.** Nada de funcionalidad nueva por si acaso: cuatro fricciones comerciales **medidas en Chrome** sobre el catálogo real, y sus arreglos.
+
+| Problema encontrado (medido) | Estado |
+|---|---|
+| **El botón de comprar quedaba a 1,3 pantallas de scroll.** El hueco de la foto que no existe ocupa 520 px: `h1` a 639, precio a 748, tallas a 920, CTA a **1108 px** | Sin foto el hueco pasa a proporción ancha. Medido después: `h1` **363**, precio **472**, tallas **644**, CTA **832 px** — tallas y botón **dentro de la primera pantalla** |
+| **Un producto agotado ofrecía botones de compra activos** y en ningún sitio ponía «agotado»: el cliente pulsaba comprar y se le pedía elegir una talla que no se podía pulsar | La disponibilidad se calcula sobre TODAS las variantes. Sin stock: CTA deshabilitados, «Agotado por ahora» junto al precio, y ya no se pide lo imposible |
+| **El carrito llamaba «Total» —y en rojo— a una cifra sin envío.** 34,90 € rotulado Total, 39,80 € cobrados | Se llama «Subtotal», que es lo que es. El importe no cambia; el rótulo deja de mentir |
+| **`og:image` era `null`** y la tarjeta era `summary`: un producto compartido o usado como destino de anuncio iba **sin imagen** | Respaldo a la portada de la tienda; tarjeta siempre grande. La foto del producto manda cuando existe |
+| El cliente no sabía el envío hasta el último paso | Ficha y carrito lo dicen, **siempre desde `shipping_methods`**: «Envío desde 4,90 € · gratis a partir de 60,00 € · recogida en tienda sin coste» |
+| En el panel, «publicados sin foto» dejaba al administrador arriba del formulario de edición | Cada fila lleva a `#imagenes` con el rótulo «Subir foto →». Verificado: el destino tiene el control de subida |
+
+**Riesgo que apareció al implementarlo y se cerró:** al leer `shipping_methods` en `/carrito`, Next la seguía marcando `○ (Static)` **sin revalidación** — el precio de envío habría quedado horneado en el build. Es el mismo fallo que el incremento 8 midió en `/checkout`. Se cierra con `revalidate = 300` **y** con que las tres acciones de métodos de entrega ahora invaliden el escaparate (la nota del incremento 9 que decía lo contrario queda corregida en el código y en la matriz).
+
+**Lo que NO se tocó porque ya funcionaba** (verificado, no supuesto): la talla sin stock ya se deshabilitaba y se tachaba; el carrito conserva la variante exacta (`Piedra/M` llega igual al `order_item`); el precio de la ficha es el que se cobra y el que viaja a WhatsApp; el pedido sigue siendo snapshot; la atribución entra por la ficha y llega al pedido.
+
+**Rendimiento medido** (build servido, p50 de 9 peticiones): `/` **12 ms / 32,5 KB** · ficha **10 ms / 27,5 KB** · `/carrito` **8 ms / 18,4 KB** · `/checkout` 200 ms. En navegador, 5 cargas en frío: landing **20 peticiones, 254,3 KB, LCP 160 ms**; ficha **22 peticiones, 259,2 KB, LCP 192 ms**. La ficha y el carrito hacen **una consulta más** (los métodos de envío), en paralelo con lo que ya pedían. El build sigue igual: `/` y `/carrito` estáticas con ISR, las fichas `● (SSG)`.
+
+> ⚠️ **LO QUE FALTA NO ES CÓDIGO: SON LAS FOTOS.** Los 4 productos siguen sin ninguna imagen, y es lo único que separa esta ficha de estar lista para un anuncio — el cliente entiende qué es, cuánto cuesta, qué tallas hay y cuánto cuesta el envío, pero **no ve el producto**. La vía está probada de punta a punta (incrementos 7 y 17) y el panel lleva de «publicados sin foto» directamente al control de subida. Subirlas no requiere tocar código.
+
+> ⚠️ **La tienda sigue sin poder vender hasta que se escriba el número de WhatsApp real** en `/admin/ajustes` (DEC-065).
+
+**Fuera de alcance, y documentado como decisión pendiente:** promociones, cupones y descuentos siguen esperando la regla de acumulación; el footer anuncia «Envíos · Devoluciones (próximamente)», que exige una política real escrita por el negocio antes de poder publicarla.
+
+**Estado global tras el incremento 19:** lint limpio · tsc limpio · **npm test 1088/1088** · build correcto · **E2E 44/44** en Chrome 153 headless a 390×844 sobre el build servido · BD y Storage en el baseline · **sin commits**.
+
+---
+
+## Incremento 18 — Recuperación de contraseña del administrador: COMPLETADO
+
+**Cero migraciones, cero tablas, cero tokens propios.** Perder la contraseña del panel dejaba al administrador fuera sin salida; ahora hay una, y es la de Supabase Auth.
+
+| Pieza | Verificación |
+|---|---|
+| Salida desde el login | «¿Has olvidado tu contraseña?» debajo del botón, 44 px, lleva a `/admin/recuperar` |
+| **No enumera cuentas** | Los tres casos —email no registrado, formato inválido y registrado de verdad— dan **exactamente la misma pantalla** (comprobado comparando el texto completo). Medido en Supabase: `POST /auth/v1/recover` devuelve 200 y cuerpo vacío exista o no la cuenta |
+| Campo vacío | Único error de forma que se muestra: no dice nada de ninguna cuenta |
+| **El enlace del email funciona** | Siguiendo el `action_link` real: se aterriza en `/admin/reset-password`, se pinta el formulario con el email de la cuenta, y **el token desaparece de la barra de direcciones** |
+| Enlace inválido, caducado, ya usado o a pelo | Mensaje ÚNICO «Este enlace no sirve» + botón para pedir otro. No se distingue el motivo |
+| **Un solo uso** | Medido contra Supabase: el segundo canje del mismo token devuelve **403 · otp_expired**. Verificado también en navegador reabriendo el enlace ya usado |
+| Política de contraseñas | La del proyecto y solo esa: **mínimo 6**, sin mayúsculas ni símbolos inventados. Si el servidor rechaza, se muestra **su** mensaje |
+| Validaciones | Campos vacíos, contraseñas distintas y contraseña corta, cada una con su mensaje. Mostrar/ocultar funciona |
+| Cambio efectivo | La contraseña nueva entra al panel; **la antigua deja de entrar** |
+| **Cierra la sesión de recuperación** | Al guardar vuelve al login con «Contraseña actualizada. Entra con la nueva», así el acceso vuelve a pasar por `is_admin()` |
+| **AUTENTICADO ≠ ADMINISTRADOR** | Una cuenta **sin perfil** recupera su contraseña con normalidad, entra en Supabase Auth… y **no entra al panel**: se le dice «Esta cuenta no tiene acceso al panel», `/admin` la sigue rebotando y **no se le ha creado ningún perfil** |
+| Login intacto | Correcto, incorrecto con mensaje genérico, logout, protección de `/admin`, `?next=` respetado y sesión persistente: todo sigue igual |
+| Móvil 390×844 | Sin desbordamiento en las tres pantallas. **Todos los objetivos táctiles ≥44 px** — el botón mostrar/ocultar medía 40 y se corrigió |
+| El proxy sigue sin autorizar | Gana una lista de rutas públicas y **no consulta el rol** (DEC-031 intacta, con test que lo comprueba) |
+| Sin `service_role` | Ningún archivo del flujo la toca, y hay un test que lo verifica archivo por archivo |
+
+**Lo que NO se ha hecho, y es deliberado:** ningún código maestro, segunda contraseña, preguntas de seguridad, recuperación por WhatsApp, endpoint secreto ni bypass administrativo. Tampoco un rate limiter propio: Supabase ya limita de verdad (`over_email_send_rate_limit` y `over_request_rate_limit`, los dos medidos en esta auditoría).
+
+> ⚠️ **DEPENDE DE CONFIGURACIÓN EXTERNA: la ENTREGA del correo.** El SMTP integrado de Supabase está limitado —respondió `429` durante esta auditoría— y en proyectos alojados solo entrega a miembros del equipo. **Para que el administrador reciba el email de verdad hay que configurar un SMTP propio** en el panel de Supabase. Todo lo demás del flujo está verificado contra el proyecto real; en los tests el enlace se obtiene con `admin/generate_link`, que ocupa el lugar del buzón que este entorno no tiene. **No se declara «recuperación por email verificada».**
+
+> ℹ️ **Mejora opcional documentada:** con una plantilla de email que use `{{ .TokenHash }}` (Authentication → Email Templates), el enlace apunta a `/admin/auth/confirm` y **el token no pasa nunca por JavaScript**. La ruta ya existe y está probada. Con la plantilla por defecto el token llega en el fragmento de la URL y lo recoge un componente cliente mínimo (DEC-079).
+
+**Rendimiento medido** (build servido, p50 de 9 peticiones): `/admin/login` **34 ms** · `/admin/recuperar` **24 ms** · `/admin/reset-password` **23 ms** · `/admin` 8 ms (307 al login) · `/` 13 ms. Las tres pantallas de acceso son `ƒ (Dynamic)`, como ya lo era el login: dependen de cookies de sesión y **no había nada estático que convertir**. La tienda pública no cambia: `/` sigue `○ (Static)` con ISR y las fichas `● (SSG)`.
+
+**Estado global tras el incremento 18:** lint limpio · tsc limpio · **npm test 1064/1064** · build correcto · **E2E 45/45** en Chrome 153 headless a 390×844 sobre el build servido + **9 de integración** contra Supabase real · BD y Storage en el baseline · **sin commits**.
+
+---
+
+## Incremento 17 — Logo administrable, estado de venta accionable y dos límites que estaban rotos: COMPLETADO
+
+**Cero migraciones.** El bucket `content` ya tenía las policies correctas desde la `0015` y `settings.logo_url` existía desde la `0013`: lo que faltaba era la pantalla. Lo que sí apareció fueron **dos fallos reales medidos**, uno de ellos en una funcionalidad que se daba por terminada.
+
+| Pieza | Verificación |
+|---|---|
+| **Logo administrable** | Subir → guardar → usar, desde `/admin/ajustes`. Un PNG de 900×300 sale como **WebP de 512×171 y 1 KB**; el panel confirma medidas y peso, y el administrador ve el resultado al instante |
+| Validación reutilizada | Un **SVG disfrazado de PNG** se rechaza por su CONTENIDO (magic bytes), no por lo que declara el navegador. Un archivo de 8 MB: «La imagen pesa 8.3 MB y el máximo son 5 MB». **Ninguno de los dos deja rastro** |
+| **Sustituir no deja huérfanos** | Objeto nuevo → referencia → borrar el viejo. Tras sustituir queda **exactamente un objeto** en el bucket. Quitar el logo deja `logo_url` a NULL y borra su objeto |
+| **Cada subida es una ruta NUEVA, y hay motivo** | Medido: tras borrar un objeto, su URL pública **sigue devolviendo 200** un rato — la sirve un CDN por delante de Storage. Sobrescribir la misma ruta dejaría al cliente viendo el logo anterior sin arreglo posible desde el panel |
+| Seguridad | anon y autenticado-sin-rol **no** pueden subir, borrar ni cambiar la referencia; el objeto queda intacto tras cada intento. El cliente lo LEE sin sesión. **Sin `service_role`** |
+| **El logo llega al cliente** | Cabecera con `alt` = nombre de la tienda, caja de altura reservada (32 px, sin salto de layout), por `next/image`, y **el nombre no se repite al lado**. Sin logo, la cabecera vuelve al nombre escrito |
+| **Estado de venta = lista, no semáforo** | Se ven **siempre las dos comprobaciones**, con ✓ o ✕. Antes, un fallo escondía el requisito que sí se cumplía y el administrador no sabía si estaba bien o sin mirar. Cada fallo lleva **su botón** (44 px) al ancla que lo arregla; sin fallos, cero botones |
+| Un solo criterio, y ahora demostrado | `SALE_CHECKS` es la única declaración; los bloqueos son `checklist.filter(no pasa)`. Un test comprueba que coinciden **exactamente** en los cuatro estados posibles. Se retira `getSaleBlockers`, que se quedó sin consumidores |
+| **P1 corregido: el lote de fotos NUNCA cupo** | El incremento 7 configuró 26 MB para la Server Action, pero `proxy.ts` bufferiza el cuerpo con un tope propio de **10 MB**. Medido con el formulario real del catálogo: **3 fotos × 4,84 MB → «Algo ha fallado», 0 subidas**. Tras derivar `proxyClientMaxBodySize` de la misma constante: **3 subidas** |
+| **P0 evitado: el logo rompía el Open Graph** | Con el logo como data URI WebP, `/opengraph-image` devolvía **500** (`TypeError: u2 is not iterable`): **`next/og` no sabe decodificar WebP**, verificado en su código compilado. Se convierte a PNG con `sharp` y cualquier fallo cae al diseño tipográfico anterior. Ahora **200 · image/png · 30,3 KB** |
+
+**Lo que se verificó y NO se tocó** (el encargo era comprobar, no cambiar):
+
+- **Réplicas.** Dos productos públicos distintos pueden apuntar al mismo artículo externo: misma `supplier_ref` en variantes de productos distintos, proveedores distintos, y el `sku` sigue siendo único (409 al repetirlo). El cliente no puede leer ninguna de las dos columnas ni con la anon key.
+- **Precio histórico.** `order_items` es un snapshot completo. Subir el precio de la variante y renombrar el producto **no tocan ni una línea** de un pedido ya hecho, y `line_total` cuadra consigo mismo. Es la condición que tendrán que cumplir las promociones el día que existan: **ya se cumple**.
+- **Meta Ads.** Las siete claves llegan íntegras desde la URL al `sessionStorage` (`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, `fbclid`, `landing_path`) y de ahí a `orders.attribution`. Sin cookies nuevas, sin cambiar la política de consentimiento.
+
+**Rendimiento medido** (build servido, p50 de 9 peticiones, sin logo → con logo): `/` **7 → 6 ms** · ficha **7 → 7 ms** · `/checkout` **160 → 156 ms** (+6 KB de HTML por el marcado del logo) · `/opengraph-image` **5 → 6 ms** y 30,3 KB. En el build, `/` sigue saliendo `○ (Static)` con ISR de 5 min y las fichas `● (SSG)`: **cargar el logo desde Storage no ha vuelto dinámica ninguna página**. Landing en Chrome con logo: 20 peticiones, 253,9 KB, **LCP p50 152 ms**. La regeneración de la tarjeta de Open Graph añade una petición a Storage y una conversión a PNG, como mucho una vez cada 5 minutos.
+
+**NO implementado, y deliberado:** DAM, biblioteca multimedia, selector de logos, recorte, favicon derivado del logo, editor de páginas, bloques, rich text, temas, colores o fuentes configurables, promociones, descuentos, cupones, entidad `suppliers`, campo `replica`, Meta Pixel y Conversions API.
+
+**Estado global tras el incremento 17:** lint limpio · tsc limpio · **npm test 1039/1039** · build correcto · **E2E 78/78** (42 panel + 36 cliente) en **Chrome 153 headless** a 390×844 sobre el build servido · BD y Storage devueltos al baseline exacto · **sin commits**.
+
+> ⚠️ **El navegador de este entorno se actualizó a Chrome 153.0.8010.36** entre el incremento 16 y este. Las mediciones se hicieron sobre esa versión, no sobre la 152 de los incrementos anteriores.
+
+> ⚠️ **LA TIENDA SIGUE SIN PODER VENDER, Y SIGUE SIENDO DELIBERADO.** El número de WhatsApp del seed sigue en la base de datos. La diferencia de este incremento: el panel ahora lo dice como lista con un botón que lleva directo al campo, y el cliente lo sabe al entrar en `/checkout`. Los 4 productos siguen sin foto — y desde este incremento el lote de fotos **sí se puede subir**.
+
+---
+
+## Incremento 16 — La identidad de la tienda sale del código, y el cliente no rellena un checkout que no puede terminar: COMPLETADO
+
+Tres migraciones (0042, 0043 y 0044) y ninguna abstracción nueva. La pregunta que guía el incremento no era «¿qué más se puede configurar?» sino «¿qué obliga hoy a desplegar, y qué puede romper una venta?».
+
+| Pieza | Verificación |
+|---|---|
+| **El nombre de la tienda deja de estar en el código** | Estaba escrito a mano en **cinco sitios** —título y plantilla del layout raíz, `og:site_name` y títulos de la home, `og:site_name` de cada ficha, logo del Header e imagen de portada— y ninguno leía `settings`. E2E: el `<title>`, el `<meta description>`, el logo, el `og:site_name` de la home y de la ficha y el Footer salen todos de la fila de la BD; cambiarlo en el panel lo refleja una ruta dinámica **sin desplegar** |
+| **`settings.tagline` (0042)** | La frase estaba **duplicada cinco veces** y no existía como columna. Ahora es editable, y **vacío significa vacío**: sin frase no se pinta ninguna descripción, nunca un texto por defecto (verificado: al borrarla, «Vive a tu propio ritmo.» desaparece de la tienda) |
+| **`/opengraph-image` pasa a ISR de 5 min** | Era un archivo horneado en el build con la marca escrita a mano: la imagen que se ve al pegar el enlace en WhatsApp o en un anuncio se habría quedado con el nombre viejo. Sigue respondiendo 200 y `image/png` |
+| **Cero consultas nuevas en la tienda** | `getStorefrontSettings` es `cache()` de React y el layout ya la llamaba para el Footer. En el build, `/` sigue siendo `○ (Static)` con ISR de 5 min y las fichas `● (SSG)` |
+| **`/checkout` pregunta ANTES de pintar el formulario** | Reproducido en Chrome con el estado real del repositorio: el cliente rellenaba nombre, teléfono y método de entrega y **solo al pulsar «COMPRAR POR WHATSAPP»** recibía `CHECKOUT_NOT_CONFIGURED`. Ahora la página no se pinta: mensaje neutro, salida al carrito y **el carrito no se pierde** |
+| **El cliente no se entera de CÓMO está configurada la tienda** | Los `title`/`fix` de los bloqueos son del administrador. Hay un test que falla si «WhatsApp», «métodos de entrega» o el código del bloqueo aparecen en `/checkout` |
+| **Una sola respuesta a «¿puede vender?»** | El test que impedía duplicar el criterio en el panel ahora cubre también `/checkout`. `getSaleBlockers` carga los datos para quien no los tiene; quien ya los tiene (`/checkout`, `/admin/ajustes`) llama al criterio directamente — **medido**: hacerlo de la otra forma costaba +85 ms por carga |
+| **Integridad en PostgreSQL (0042 + 0043)** | Medido ANTES, con sesión de admin y sin pasar por el panel: `store_name` en blanco, `instagram_url` con `javascript:` y un email inválido devolvían **200 y se guardaban** — y el segundo acaba en el `href` del footer de todas las páginas. Ahora **23514** en los tres, con controles positivos |
+| **`supplier` y `supplier_ref` dejan de ser legibles por `anon` (0044)** | El incremento 13 verificó que la ficha no las **pinta**; seguían pudiéndose **pedir** a PostgREST con la anon key (200). Hoy están a NULL, así que no había fuga: había una puerta. Ahora **401 · 42501**, y el escaparate sigue leyendo lo suyo |
+| **`/admin/ajustes` ordenado para un móvil** | Antes empezaba por una tabla de solo lectura y el campo de WhatsApp quedaba el último, detrás de un formulario de alta. Ahora: estado de venta → WhatsApp → entrega → identidad → solo lectura. Cada bloqueo **enlaza** a la sección que lo arregla, y un test comprueba que esas anclas existen |
+| **Objetivo táctil de «Editar» un método** | **Medido a 390 px: 20 px de alto**, el interlineado de su propio texto — y es el gesto que hay que acertar para cambiar lo que cobra la tienda. Ahora 44 px o más, como todos los demás (17 objetivos medidos, mínimo 44) |
+
+**El recorrido que este incremento tenía que hacer posible, verificado en Chrome a 390×844:** abrir Ajustes → ver «Venta bloqueada» → tocar el bloqueo → escribir el número → guardar → **ver «Lista para vender» sin recargar**. Y: abrir un método → cambiar 4,90 → guardar → la fila enseña 6,90 → **el cliente ve 6,90 en el checkout**.
+
+**Rendimiento medido** (build servido, p50): `/` **9 ms** · `/carrito` 7 ms · ficha 7 ms · `/sitemap.xml` 4 ms · `/opengraph-image` 6 ms · `/checkout` **195 ms** · `/admin/ajustes` 435 ms · `/admin` 430 ms · `/admin/inventario` 340 ms. La landing carga **19 peticiones y 258,5 KB**, de las cuales 3 son prefetches RSC que dependen del tiempo de espera de la medida: **no es comparable con las 17 / 222 KB del incremento 15**, medidas con otra ventana. Lo que sí es comparable y es el dato importante: **este incremento no añade ni un solo script de cliente**. `/checkout` paga una consulta más que antes del incremento, en paralelo con la que ya hacía; costó 231 ms cuando esa consulta era secuencial y quedó en 195 ms al resolverla con la lista de métodos que la página ya carga.
+
+**NO implementado, y deliberado:** subida de logo, editor de políticas, Meta Pixel, Conversions API, banner de consentimiento, historial de cambios de configuración, tabla de proveedores y cualquier `settings` genérico de clave/valor.
+
+**Estado global tras el incremento 16:** lint limpio · tsc limpio · **npm test 990/990** · build correcto · **E2E 69/69** (33 cliente + 36 panel) en Chrome 152 headless a 390×844 sobre el build servido · BD y Storage devueltos al baseline exacto · **sin commits**.
+
+> ⚠️ **LA TIENDA SIGUE SIN PODER VENDER, Y SIGUE SIENDO DELIBERADO.** El número de WhatsApp del seed (`34600000000`) sigue en la base de datos, así que desde DEC-065 el checkout rechaza las compras — y desde este incremento **el cliente lo sabe nada más entrar en `/checkout`**, en vez de descubrirlo tras rellenar el formulario. Se arregla escribiendo el número real en `/admin/ajustes`. Los 4 productos siguen sin foto.
+
+---
+
+## Incremento 15 — Configuración operativa administrable: COMPLETADO
+
+Lo que ya era editable se verificó de punta a punta; lo que estaba roto o a medias se arregló. **Sin cambios de esquema.**
+
+| Pieza | Verificación |
+|---|---|
+| WhatsApp administrable de verdad | E2E: se escribe `+34 611 222 333` en el panel → se guarda `34611222333` → el pedido se crea → **el enlace `wa.me` lleva el número nuevo**, no el del seed |
+| Validación | El número del seed y uno de 3 dígitos se rechazan con mensaje claro y **no** se guardan |
+| Estado de venta con UNA fuente | `resolveSaleBlockers` decide, y lo consumen el panel de inicio y Ajustes. Antes el inicio solo miraba WhatsApp y no veía el segundo bloqueo real: quedarse sin métodos de entrega activos |
+| Envío configurable, histórico intacto | Cambiar 4,90 € → 6,90 € se refleja en el checkout, y **el pedido anterior sigue cobrando 4,90 €** (verificado en integración y en E2E) |
+| Configuración fantasma eliminada | `contact_email` y las redes eran editables **sin que nada las pintara**. Ahora salen en el footer de toda la tienda, y al guardar se ven en la siguiente carga (`revalidateStorefront`) |
+| `settings` por columna (0041) | Medido ANTES: `GET /settings?select=*` con la anon key devolvía la fila entera. Ahora **401 · 42501**, y las columnas públicas siguen dando 200. Una columna nueva nace privada |
+| Autorización | anon y autenticado-sin-rol no escriben; anónimo redirigido al login; precio, umbral y nombre inválidos los rechaza PostgreSQL (23514) |
+| Móvil | 390 px sin desbordamiento; objetivos táctiles ≥44 px (la casilla mide 20 px, pero su `<label>` envolvente —que es el objetivo real— mide 44) |
+
+**Rendimiento medido** (build servido): `/admin/ajustes` p50 **748 ms** · `/admin` 665 ms · `/checkout` 336 ms · landing (HTML) **59 ms**. La landing añade **una consulta** por render de ISR (el footer) y sigue en 17 peticiones y 222 KB. LCP p50 216 ms; **la medida de LCP en este momento es ruidosa** —una página NO tocada por el incremento marcó 1296 ms de mediana en la misma tanda—, así que no se afirma ni mejora ni regresión.
+
+**NO implementado, y deliberado:** subida de logo, editor de políticas, Meta Pixel ID, historial de cambios de configuración (`admin_change_log` tiene `product_id NOT NULL`: es el historial del catálogo) y cualquier settings genérico.
+
+---
+
+**Estado global tras el incremento 14:** lint limpio · tsc limpio · **npm test 942/942** · build correcto · **E2E 25/25 (inc. 14) + 30/30 (inc. 13) + 36/36 (inc. 12) en Chrome real sobre el build servido** · BD y Storage en el baseline verificado · **sin commits**.
+
+---
+
+## Incremento 14 — Atribución mínima: de qué anuncio vino el pedido: COMPLETADO
+
+| Pieza | Verificación |
+|---|---|
+| `orders.attribution jsonb` (0040) | Siete claves: los cinco UTM, `fbclid` y `landing_path`. **Sin PII por construcción**: `create_order` lee una lista blanca y descarta el resto |
+| Captura | `sessionStorage`, **first touch**: la segunda campaña de la sesión no pisa a la primera (verificado en Chrome). Una pestaña nueva empieza de cero |
+| No rompe el SSG | Se lee `window.location.search` en un `useEffect`, no `useSearchParams()`: el HTML servido es idéntico con y sin UTMs y `/` sigue siendo estática con ISR de 5 min |
+| Compra completa desde un anuncio | E2E real: entrar con 6 parámetros → navegar por `/carrito` y `/` → añadir al carrito → checkout → **el pedido conserva la atribución exacta** |
+| Tráfico directo | El pedido se crea con `attribution = null`, y el panel lo dice: «— directo» |
+| Nunca rompe una venta | Valor de 3000 caracteres → recortado a 200 · objeto de 100 KB → `null` · tipos absurdos → descartados · `sessionStorage` corrupto → pedido creado igual. **En todos los casos la compra se completa** |
+| Nada de PII | Un `email=` en la URL no llega a la tabla (verificado en E2E y en integración) |
+| Histórica | Un reintento con OTRA campaña devuelve el mismo pedido y **no reescribe** el origen. La atribución no entra en el fingerprint |
+| Una sola puerta | La firma de 7 parámetros de `create_order` se elimina; solo existe la de 8 (verificado leyendo el esquema OpenAPI del proyecto real) |
+| Privacidad | `anon` no puede leerla ni escribirla; no aparece en el HTML de `/`, de la ficha ni de `/pedido/[numero]` |
+| Panel | Una línea en el pedido: «instagram · paid · lanzamiento». Sin JSON crudo, sin pantalla nueva |
+
+**Rendimiento medido en la landing** (mediana de 5 cargas en frío, Chrome, 390 px): **+1 petición y +1,1 KB** (221,6 → 222,7 KB). LCP 164 ms frente a 184 ms medidos antes del incremento: **sin cambio apreciable**, la diferencia está dentro del ruido.
+
+**NO hecho, y deliberado:** Meta Pixel, Conversions API, banner de consentimiento, dashboard de marketing y ROAS (falta el coste publicitario). Los puntos exactos de integración del Pixel están escritos en `docs/12-ATTRIBUTION.md` §8.
+
+---
+
+**Estado global tras el incremento 13:** lint limpio · tsc limpio · **npm test 902/902** · build correcto · **E2E 36/36 (inc. 12) + 30/30 (inc. 13) en Chrome real a 390 px sobre el build servido** · BD y Storage en el baseline verificado · **sin commits**.
+
+---
+
+## Incremento 13 — Proveedor y referencia externa: COMPLETADO
+
+Dos columnas de texto, ninguna entidad nueva. Responden a «¿de dónde viene esto y qué referencia pido cuando me llegue disponibilidad?».
+
+| Pieza | Verificación |
+|---|---|
+| `products.supplier` · `product_variants.supplier_ref` (0039) | Texto libre con CHECK de «no en blanco» y ≤ 120. **Sin tabla de proveedores, sin `market_id` propio, sin índice** |
+| **Sin UNIQUE, a propósito** | Verificado contra Supabase real: dos productos distintos comparten proveedor **y** referencia sin error, y dos variantes del mismo producto también. Lo que sigue siendo único es el `sku` (control positivo: SKU repetido → 409) |
+| La referencia no se normaliza | `abc-123-blk/m` se guarda exactamente así. Convertirla a mayúsculas sería inventarse el formato del proveedor |
+| Integridad | Escribir referencia no cambia stock, sku, precio, `is_active`, color ni talla (comparación campo a campo antes/después). Escribir proveedor no toca ninguna variante |
+| No entra en la auditoría | `admin_change_log` sigue registrando solo `price`, `stock`, `status` y `deleted_at`: escribir una referencia deja **cero** filas |
+| No viaja al pedido | `order_items` no tiene la columna y no se le añade: el snapshot guarda lo que el cliente compró, no de dónde se surte la tienda |
+| Autorización | anon y autenticado-sin-rol: **0 filas afectadas** y dato intacto (RLS responde 200 con lista vacía, no 403). Mercado inactivo (CO): 0 filas |
+| Límites en PostgreSQL | `'   '` → 23514 · 121 caracteres → 23514 · 120 justos → 200 |
+| Búsqueda | El inventario busca por nombre, slug, **proveedor** y **referencia**, en las MISMAS dos consultas de antes: `supplier` va en el `or` de productos y `supplier_ref` en el `or` de variantes |
+| Invisible para el cliente | Verificado sobre el build servido: la ficha pública del producto **no contiene** ni el proveedor ni la referencia |
+
+**Rendimiento medido sobre el build servido** (5 peticiones, p50): `/admin/inventario` **337 ms** · con búsqueda **424 ms** · ficha de producto **481 ms**. Consultas: **1** sin búsqueda y **2** con búsqueda, igual que antes del incremento. `scrollWidth == 390` sigue cumpliéndose.
+
+**NO hecho, y deliberado:** el buscador del **catálogo** (`/admin/catalogo`) sigue mirando solo nombre y slug — el flujo de stock pasa por Inventario y ahí es donde se necesita. Sin índice para `ilike '%…%'` (un btree no lo sirve; GIN + `pg_trgm` es una extensión nueva para un catálogo de 4 productos).
+
+---
+
+## Incremento 12 — Inventario operativo: «Dejar en X» + «Agotar»: COMPLETADO
+
+El stock ahora se ESCRIBE, no se suma: la fuente externa dicta «hay 12» y el panel copia ese número.
+
+| Pieza | Verificación |
+|---|---|
+| `admin_set_variant_stock` (0038) | `mode='set'` con testigo obligatorio · `mode='exhaust'` escribe 0 sin testigo porque converge. 24 tests de integración contra Supabase real |
+| No perder cambios | Dos admins con el mismo testigo → uno guarda y el otro recibe `STOCK_CHANGED`. Un testigo viejo NO pisa el valor nuevo. **Una VENTA también caduca el testigo**: escribir encima habría borrado el pedido en silencio |
+| Todo o nada | Lote M=4/L=0/XL=7 con la L cambiada por debajo → **ninguna de las tres se guarda**, verificado leyendo las tres filas después |
+| Agotar | 7 → 0; 0 → 0 sin error; solo toca su variante; **no despublica ni desactiva** (comprobado sobre el producto y sobre `is_active`) |
+| Escribir lo mismo no escribe | 7 → 7 no mueve `updated_at` (no caduca testigos ajenos) y no deja auditoría |
+| Auditoría | Queda como `correccion` con actor, sku, valor anterior y nuevo. **Sin categoría nueva en el CHECK** |
+| Mercado | Variante de CO enviada como ES → `VARIANT_NOT_IN_MARKET`; `p_market_id: CO` tampoco escribe (RLS exige mercado ACTIVO) |
+| Autorización | anon y autenticado-sin-rol rechazados por POST directo a la RPC, con control positivo de admin |
+| **Buscador arreglado** | Antes: CUALQUIER búsqueda en `/admin/inventario` caía en «Algo ha fallado» (`400 PGRST100`, columna embebida dentro de un `or`) — reproducido en el navegador. Ahora busca por nombre, slug y SKU en dos consultas |
+| **Barra del panel arreglada** | Antes, a 390 px el documento medía **833 px** y TODAS las pantallas del panel se desplazaban de lado. Ahora `scrollWidth == 390` en las 5 pantallas medidas |
+| Móvil de verdad | Campos y botones de 48 px (mínimo pedido: 44). Un formulario por producto; tras guardar, el campo muestra el valor nuevo sin recargar y sin salir de la página |
+| Sin JavaScript | La pantalla se sirve entera con los scripts apagados y **guarda por POST `multipart/form-data`** |
+
+**Retirado del panel, no de la BD:** `admin_restock_variants` (0026) sigue intacta y probada, pero ninguna pantalla la llama (DEC-068). Con ella se van `restockVariantsAction` y los ayudantes de parseo del delta.
+
+**NO hecho, y deliberado:** no hay edición masiva entre productos, ni importador, ni historial de inventario. **No se ha medido el rendimiento con catálogo grande**: con 4 productos y 9 variantes no significaría nada.
+
+> ⚠️ **LA TIENDA NO PUEDE VENDER AHORA MISMO, Y ES DELIBERADO.** El número de WhatsApp sigue siendo el del seed (`34600000000`), así que desde DEC-065 el checkout rechaza las compras en vez de registrar pedidos que no le llegan a nadie. Se arregla escribiendo el número real en `/admin/ajustes`. Los 4 productos siguen **sin foto** (ahora contados como tales, que es la verdad): se suben desde `/admin/catalogo`.
 
 **Incremento 5A — qué es real ahora:**
 
@@ -56,7 +316,7 @@ Fase 9 quedó completada salvo la auditoría CWV. Fase 9.5 añade lo que hace el
 
 ---
 
-## Incremento 5C — Trazabilidad administrativa: COMPLETADO
+## Incremento 5C — Trazabilidad administrativa: COMPLETADO (corregido por la 0033)
 
 | Pieza | Verificación |
 |---|---|
@@ -67,12 +327,238 @@ Fase 9 quedó completada salvo la auditoría CWV. Fase 9.5 añade lo que hace el
 | Concurrencia | +5 y +7 sobre 10 → 10→15 y 15→22, encadenados. Dos correcciones → 10→20 y 20→30, nunca 10→20 y 10→30. Una corrección rechazada por bloqueo optimista **no deja rastro** |
 | No genera basura | 20 → 20 no registra. NULL → NULL tampoco. Nombre, descripción, SEO y umbral no se auditan |
 | El borrado lógico sí se registra | `is distinct from` en vez de `<>`: con `<>`, NULL → fecha daría NULL y no se registraría nunca |
-| UI sin JSON | En la ficha del producto: «Repuso +8 uds (12 → 20)», «Precio: 19,90 € → 24,90 €», «Retirado de la tienda», con autor y fecha |
-| Índice medido | 30.000 registros: Index Scan, 5 buffers, 0,17 ms. Sin índice: Seq Scan de 30.000 filas + top-N heapsort, 406 buffers, 4,09 ms |
+| UI sin JSON | En la ficha del producto: «Repuso +12 uds (20 → 32)», «Precio: 25,00 € → 22,00 €», «Retirado de la tienda», con autor y fecha — **comprobado en el HTML del build servido** |
+| El límite se dice | Con más de 20 cambios la ficha avisa de que enseña solo los últimos; no promete un historial completo |
+
+### ⚠️ Lo que se encontró ROTO en la 0032 y se corrigió en la 0033
+
+Los tres se **reprodujeron contra el proyecto real** antes de tocar nada.
+
+| Fallo | Medido antes | Después de la 0033 |
+|---|---|---|
+| **La auditoría podía DENEGAR una venta.** `actor_id` referencia `profiles` y la puerta era `auth.uid() is not null`: un autenticado sin perfil hacía saltar la FK dentro de `create_order` | `409 · 23503 · Key (actor_id)=… is not present in table "profiles"`, transacción deshecha, **pedido no creado**, stock intacto en 10 | **200**, pedido creado, stock cobrado 10 → 8, cero filas de auditoría |
+| **Una compra con sesión de admin se auditaba como decisión.** Solo se excluía `admin_update_order_status` | `stock, 10 → 8, source=rpc` → la ficha pintaba «Stock corregido: 10 → 8» | Cero filas, con control positivo de que el stock sí se movió |
+| **El historial sobrevivía al aislamiento de mercado.** Única tabla del admin cuya policy decía solo `is_admin()` | Producto → `[]`; su historial → sku, precio anterior y precio nuevo, legibles | Producto → `[]` y historial → `[]`, con la fila **intacta** en la tabla: se esconde, no se borra |
 
 **Huecos asumidos, no fallos:** el historial de stock NO incluye ventas ni cancelaciones, así que puede saltar de 24 a 20 sin una entrada. La interfaz lo dice literalmente. **Nada verificado en navegador.**
 
-**Números de 5C:** `npm test` **623/623** · **E2E 10/10** sobre el build servido · 1 migración (0032).
+**Rendimiento — lo que se midió y lo que no:** `EXPLAIN` **no es obtenible en este entorno**: el proyecto hosted responde `PGRST107` al `Accept: application/vnd.pgrst.plan`, no hay `psql` ni driver de Postgres, y crear una función auxiliar solo para medir ensuciaría el historial de migraciones. Los números de plan que esta ficha traía antes vienen de una sesión anterior y **no se han podido reverificar**. Lo que sí se midió aquí, con 30.000 filas y el mismo producto acumulando 10.000: la consulta real de la ficha pasa de **p50 110 ms (tabla vacía) a 130 ms**, y de 116 a 130 ms comparada consigo misma sin RLS —todo dentro del RTT de red—, es decir **no escala con el tamaño de la tabla**. No se ha añadido ningún índice: el de la 0032 sigue igual.
+
+**Números de 5C:** `npm test` **626/626** · **E2E 15/15** sobre el build servido, sin navegador · 2 migraciones (0032 + 0033).
+
+---
+
+## Incremento 6 — Colores y tallas administrables: COMPLETADO
+
+Antes de esto, añadir un color exigía un `INSERT` a mano en Supabase: era el **único paso del alta de un producto que obligaba a salir del panel**.
+
+| Pieza | Verificación |
+|---|---|
+| `/admin/atributos` — listar, crear, editar, retirar y eliminar colores y tallas | E2E sobre el build servido: creado, editado y retirado **por POST `multipart/form-data` sin JavaScript de cliente** |
+| Sin migración de esquema | `is_active`, `unique(slug)`, `unique(label,size_group)` y el CHECK de los tres grupos **ya existían** desde la 0004. La 0034 solo endurece |
+| `hex_code` deja de admitir basura | Reproducido antes: `"rojo"` → 201, guardado como `'rojo   '` (`char(7)` rellena). Ahora 23514. Las 4 filas del seed ya cumplían el patrón, así que la migración entró sin tocar datos |
+| Un valor retirado no crea variantes nuevas | Reproducido antes: la RPC devolvía `{"created":1}` con un color inactivo. Ahora `INVALID_COLOR` / `INVALID_SIZE`, con control positivo de que activo sí crea (DEC-061) |
+| …y las variantes que ya lo usan siguen editándose | PATCH de precio y stock sobre una variante con color retirado: aceptado. Es el motivo de validar en la transición y no con un CHECK sobre la fila |
+| No se borra lo que está en uso | `DELETE` de color y de talla en uso → **23503**, y la variante queda intacta. Sin usar → se borra |
+| Renombrar no reescribe el pasado | Con un pedido REAL: `order_items.color_name` y `size_label` no cambian; la variante viva sí muestra el nombre nuevo |
+| Unicidad bajo concurrencia | Dos altas simultáneas del mismo slug → una 201 y una 23505, **una sola fila**. Igual con `(label, grupo)`. Doble submit → una fila |
+| anon y no-admin | 42501 al crear, editar y borrar, con control positivo de admin |
+| Globales, no por mercado | Test que **afirma** que `colors`/`sizes` no tienen `market_id` y que `sizes` no tiene `slug` (DEC-062) |
+
+**Corregido sobre la marcha:** los formularios de edición estaban tras un `useState`, así que **no existían en el HTML sin JavaScript** — la misma deuda que la Fase 9 dejó apuntada con las categorías. Se cambiaron a `<details>`: ahora van servidos y el E2E puede ejercitarlos por POST.
+
+**Límite conocido, no tapado:** las casillas de color y talla de la matriz de variantes son `<button onClick>` (Fase 8), así que **seleccionarlas necesita JavaScript**. Lo que sí se verificó sin navegador es qué se ofrece y qué no, leyendo el payload servido. **Nada verificado en navegador.**
+
+**Números:** `npm run lint` limpio · `npx tsc --noEmit` limpio · `npm test` **678/678** · `npm run build` correcto · **E2E 26/26** sobre el build servido · 1 migración (0034) · BD en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento P2 — Publicados sin foto: COMPLETADO
+
+Un producto se podía publicar sin una sola fotografía y **nada en el panel lo decía**: el cliente veía un recuadro gris y el dueño no se enteraba.
+
+| Pieza | Verificación |
+|---|---|
+| Definición | Publicado (`active` + `deleted_at is null`) sin ninguna imagen **utilizable** |
+| La url vacía cuenta como sin foto | `product_images.url` es NOT NULL pero **admite `''`** (comprobado: 201). El renderizador público la trata como ausencia, así que el detector también. Sin esto, ese producto se escapaba |
+| Sin migración, sin RPC, sin tocar RLS | PostgREST **sí** sabe expresar el `NOT EXISTS`: `product_images!left(id)` + `product_images=is.null`. Un comentario del repositorio afirmaba lo contrario; corregido |
+| Recuento sin traer filas | `count: "exact"` + `head: true` |
+| Recuento y lista no pueden discrepar | Salen del mismo constructor (`withoutImageQuery`) |
+| El predicado | Detecta SinFoto y UrlVacia; **no** detecta ConFoto, DosFotos, Borrador, Archivado ni borrado lógico |
+| Reversible | Subir una foto lo saca de la lista y baja el aviso de 2 a 1; borrarla lo devuelve |
+| Aviso NEUTRO y separado | Sin rojo, sin «urgente». **No se suma** a `unsellable_products`: el rojo sigue significando solo «no se puede comprar» |
+| No bloquea publicar | `enforce_publishable_product` **sin tocar**. La ficha del producto sin foto responde 200 sobre el build servido |
+| Accionable | El aviso enlaza a `?ver=sin-foto` y cada fila a su ficha, donde ya se suben imágenes |
+
+**Nueva superficie de escritura: NINGUNA.** El incremento es solo de lectura, así que no hay concurrencia nueva que probar.
+
+**Qué NO protege, y conviene no exagerarlo:** un producto publicado ya es público. Verificado que `anon` ve los publicados —son la tienda— y no ve borradores ni archivados, y que la ruta del panel le redirige al login. El detector no expone ni un dato nuevo.
+
+**EXPLAIN: NO DISPONIBLE** (`PGRST107` en este proyecto hosted). **No se añadió ningún índice**, así que tampoco hacía falta: la consulta se apoya en los que ya existen (`idx_product_images_product_id`, `idx_products_public`). Con 4 productos, "va rápido" no significa nada y no lo afirmo.
+
+**Números:** `npm run lint` limpio · `npx tsc --noEmit` limpio · `npm test` **688/688** · `npm run build` correcto · **E2E 22/22** sobre el build servido · **0 migraciones** · BD en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento P3 — Buscar pedidos por teléfono y nombre: COMPLETADO
+
+El canal es WhatsApp: lo único que el cliente trae consigo es su número, y era justo por lo que **no se podía buscar**. Antes solo existía `ilike` sobre `order_number`.
+
+| Pieza | Verificación |
+|---|---|
+| Los tres caminos a la vez | Número, teléfono y nombre en una sola caja. **Sin heurística**: `000003` es a la vez cola de número y trozo de teléfono, así que adivinar fallaría justo ahí |
+| Teléfono pegado del chat | `+34 600 999 888` encuentra a `34600999888`. `customers.phone` se guarda solo con dígitos, así que se extraen del texto |
+| Nombre con tilde y ñ | «Bruno Núñez» encuentra su pedido. La normalización anterior lo destruía: dejaba «BRUNONEZ» |
+| Nombre parcial | «Ana» devuelve los pedidos de dos clientes distintos |
+| Unión sin duplicados | Un token que casa por número **y** por teléfono no repite filas; el recuento coincide con las filas |
+| Dos consultas, y por qué | **PostgREST NO admite una columna embebida dentro de un `or=(…)`**: devuelve `PGRST100 · failed to parse logic tree` (medido). Se resuelve con `or` sobre `customers` y luego `or` sobre columnas reales de `orders` |
+| Sin migración, sin RLS, sin índices | Cero cambios de esquema |
+| Aislamiento de mercado | Los mismos `market_id` que ya filtraban ambas tablas. Buscar en CO no encuentra fixtures de ES |
+| anon y no-admin | Cero resultados; `orders` y `customers` no tienen policy pública. La ruta redirige al login |
+| Inyección | `%`, `*`, `a,b)`, `name.ilike.*x*` y `a)or(b` ni rompen la consulta ni listan de más |
+
+### ⚠️ Lo que se encontró ROTO durante el incremento
+
+**Buscar `%` devolvía TODOS los pedidos.** Medido sobre el build servido: el saneado dejaba la búsqueda vacía, y una búsqueda vacía se comportaba como "no he buscado", así que la pantalla listaba los tres pedidos de prueba — que se lee como «tu búsqueda lo ha encontrado todo». Ahora se distingue "no buscar" de "buscar algo inservible": cero resultados y un mensaje que lo explica.
+
+**Límite conocido y declarado en la propia interfaz:** los acentos cuentan — «Perez» **no** encuentra «Pérez» (verificado, con control positivo de que con tilde sí). Y si la búsqueda casa con más de 200 clientes, el resultado puede estar incompleto y se avisa. **Nada verificado en navegador.**
+
+**Números:** `npm run lint` limpio · `npx tsc --noEmit` limpio · `npm test` **723/723** · `npm run build` correcto · **E2E 18/18** sobre el build servido · **0 migraciones** · BD en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento 7 — Subida de varias fotos: COMPLETADO
+
+| Pieza | Verificación |
+|---|---|
+| **La subida estaba ROTA para fotos de móvil** | Medido sobre el build servido ANTES de tocar nada: 0,32 MB → 200; **1,20 MB → 500 «Body exceeded 1 MB limit»**. Next limita el cuerpo de una Server Action a 1 MB y no estaba configurado, mientras la app decía admitir 5 MB |
+| Ahora entran varias fotos de móvil de golpe | 1,8 + 2,4 + 1,2 MB en **un solo envío** → 3 filas, 3 objetos WebP reales en Storage, ~5,9 s |
+| Éxito parcial honesto | Una válida + un SVG disfrazado → la buena se guarda, la mala no, y la respuesta **nombra los dos archivos** |
+| Lote excesivo | 6 archivos se rechazan enteros **antes de subir ninguno** |
+| **Carrera por la principal, reproducida y corregida** | Dos admins a la vez sobre un producto vacío: antes **se perdía una imagen** (2 → 1). Ahora entran las dos y sigue habiendo exactamente una principal |
+| Doble submit simultáneo | Dos envíos del mismo archivo → dos imágenes distintas, una sola principal |
+| Sin huérfanos | Tras todo el E2E: ninguna fila apunta a un objeto inexistente y ningún objeto queda sin fila |
+| Seguridad | Autenticado sin admin y anónimo no suben nada; anónimo redirigido al login |
+| Integración con P2 | El producto deja de aparecer en «Sin foto» en cuanto recibe imágenes |
+| Alt automático | «ZZ E2P7 Camiseta», «… (2)», «… (3)» — decisión de producto de Juan |
+
+**Cero migraciones. Cero cambios de esquema, RLS o Storage policies.** El único cambio de configuración es `bodySizeLimit`, derivado de las constantes de validación con un test que impide que diverjan.
+
+**Límites conocidos y aceptados:** el alt automático identifica la foto pero no la describe (peor accesibilidad que un texto escrito a mano); dos subidas concurrentes pueden compartir `sort_order`, cuyo desempate queda indefinido (preexistente); y si el proceso muere entre subir el objeto y escribir la fila, quedan bytes sin dueño — la compensación cubre el fallo de la BD, no la muerte del proceso. **Nada verificado en navegador.**
+
+### 🚩 Bloqueo operativo detectado, NO tocado
+
+**Las 4 imágenes del catálogo no existen en Storage.** Verificado contra Storage real: el bucket `products` está **vacío** y las 4 filas de `product_images` apuntan a objetos que devuelven **400**. Consecuencias: el cliente ve un recuadro gris en los cuatro productos, y el detector P2 dice «todos tienen foto» porque la FILA existe. Por decisión de Juan **no se toca ningún dato**: se arregla subiendo las fotos reales, que es justo lo que este incremento hace fácil.
+
+**Números:** `npm run lint` limpio · `npx tsc --noEmit` limpio · `npm test` **739/739** · `npm run build` correcto · **E2E 24/24** sobre el build servido con Supabase y Storage reales · **0 migraciones** · BD y Storage en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento 8 — Envío, total del pedido y fiabilidad del checkout: COMPLETADO
+
+Antes de esto, `create_order` escribía `shipping_total = 0` y `total = subtotal` **siempre**, no había selector de envío y `orders` no podía registrar qué método eligió el cliente. El importe que veía el cliente no era el que se le iba a cobrar.
+
+| Pieza | Verificación |
+|---|---|
+| El total incluye el envío | **Supabase real**: 30,00 + 4,90 = 34,90 · recogida 30,00 + 0,00 = 30,00 |
+| **El umbral de 60 € estaba en los datos y NADIE lo aplicaba** | Hallazgo de esta auditoría, que ninguna anterior vio. Ahora: en el umbral exacto (60,00) el envío sale **gratis**; con 50,00 se cobra |
+| La regla no puede divergir | Un test ejecuta `resolveShippingCost` (TypeScript) y el `case` de la 0035 (SQL) sobre los mismos casos y los compara céntimo a céntimo |
+| El navegador no decide el precio | Inyectar `shipping_total` y `total` en el POST → **rechazado de plano**: no existen como parámetros de la función. Inyectar `unit_price` → se ignora, el subtotal sigue siendo el real |
+| Método inválido | Inexistente, **retirado** o **de otro mercado** → `INVALID_SHIPPING_METHOD`. Sin método → `SHIPPING_METHOD_REQUIRED` |
+| **La firma vieja se eliminó** | La de 6 parámetros creaba pedidos con envío 0. Un POST con ella ahora falla |
+| Idempotencia | Doble envío simultáneo → **un** pedido, **un** cobro (24,90), stock descontado una vez. Misma clave con OTRO método → `IDEMPOTENCY_KEY_REUSED` en vez de devolver el total viejo |
+| Snapshot del método | Renombrar el método **no reescribe** pedidos pasados |
+| WhatsApp | Imprime «Envío (método): importe» con los valores del pedido, también cuando es 0. **No recalcula**: un total incoherente inyectado se imprime tal cual |
+| Admin | Filas «Entrega» y «Envío» en el detalle del pedido, sin abrir el chat |
+| Sin supuestos españoles | Ni precios, ni umbrales, ni nombres de método en el código: todo sale de `shipping_methods` filtrado por mercado |
+
+### ⚠️ Encontrado y corregido durante el incremento
+
+**`/checkout` era `○ (Static)`.** Al pasar a leer `shipping_methods`, seguir siendo estática habría horneado los precios de envío EN EL BUILD: cambiar 4,90 € en la base de datos no se vería hasta el siguiente despliegue, y el cliente vería un importe distinto del que se le va a cobrar. Ahora es `ƒ` dinámica.
+
+**Regresiones asumidas y arregladas:** cambiar la firma de `create_order` rompió cinco archivos de test que la llamaban. Se arreglaron resolviendo el método en tiempo real contra la BD, sin fijar ningún uuid.
+
+**NO VERIFICADO — el selector RENDERIZADO.** `CheckoutForm` corta en `!isHydrated`, así que sin navegador no existe HTML pintado del formulario. Lo que sí se comprobó sobre el build servido es que el servidor resuelve los métodos y manda su **precio y su umbral reales** en el payload, y que **ninguno viene preseleccionado**.
+
+**Números:** lint limpio · tsc limpio · `npm test` **779/779** · build correcto · **E2E 14/14** sobre el build servido · 1 migración (0035) · BD y Storage en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento 9 — CRUD de métodos de entrega: COMPLETADO
+
+El incremento 8 dejó `shipping_methods` decidiendo **lo que cobra la tienda** y sin ninguna forma de editarla que no fuera SQL a mano. Este incremento la hace administrable y le pone límites en la BD.
+
+| Pieza | Verificación |
+|---|---|
+| CRUD dentro de `/admin/ajustes` | **Build servido**: crear, editar y borrar por POST `multipart/form-data` **sin JavaScript** (el desplegable es `<details>`) |
+| El precio y el umbral se leen sin abrir nada | **Build servido**: la fila del seed imprime `4,90 €` y `gratis desde 60,00 €` en el HTML |
+| Coma decimal | **Supabase real**: `9,90` se guarda como `9.90` |
+| **Umbral vacío ≠ umbral cero** | **Supabase real**: vaciar el campo deja `NULL` (nunca gratis), no `0`. Los dos casos tienen test unitario, de integración y E2E |
+| `market_id` lo pone el servidor | **Build servido**: inyectar `market_id=CO` en el POST no mueve nada de mercado |
+| **Tres agujeros reales de la BD, cerrados** | Hallazgo de esta auditoría: antes de la 0036 la BD aceptaba con **201** un umbral `-50` (envío gratis para todos, en silencio), un `name = ''` y un nombre duplicado. Ahora: `23514`, `23514` y `23505` |
+| Las 2 filas del seed pasan las restricciones | Comprobado **antes** de aplicar la migración |
+| RLS y autorización | **Supabase real**: `anon` → 42501 · autenticado sin rol → 42501 · admin escribiendo en mercado inactivo → 42501 (DEC-035). Ninguna action usa `service_role` |
+| Retirar quita del checkout al instante | **Build servido**: desmarcar «Ofrecer» y el método desaparece de `/checkout` **sin redeploy** (`force-dynamic`) |
+| Borrar un método con pedidos es seguro | **Supabase real**: DELETE → 204, y el pedido conserva `shipping_method_name`, `shipping_total` y `total`; solo `shipping_method_id` pasa a NULL |
+| La fila avisa antes de borrar | Cuenta los pedidos que lo usan con `orders(count)` embebido: **no viaja ni una fila de pedido** |
+| Avisos de tienda no vendible | Sin métodos, o con todos retirados, la pantalla avisa en rojo de que **nadie puede completar un pedido** |
+| Anónimo | Redirigido al login |
+
+**NO VERIFICADO — el render en navegador.** Sin navegador no se ha comprobado el `<details>` abriéndose, el repintado tras guardar ni el responsive real. Lo que sí está verificado es que el HTML servido contiene el formulario completo y que los POST funcionan sin JavaScript.
+
+**Decisión nueva:** DEC-064.
+
+**Números:** lint limpio · tsc limpio · `npm test` **818/818** (176 suites) · build correcto · **E2E 24/24** sobre el build servido · **17/17** de integración contra Supabase real · 1 migración (0036) · BD y Storage en el baseline exacto · **sin commits**.
+
+---
+
+## Incremento 10 — Número de WhatsApp y fotos reales: COMPLETADO (con lo que depende de Juan, pendiente)
+
+Dos defectos con la misma causa: **el seed dejaba la tienda en un estado roto que ninguna pantalla contaba.**
+
+### A · El número de WhatsApp (DEC-065)
+
+| Pieza | Verificación |
+|---|---|
+| **El guard anterior NO detectaba el placeholder** | `normalizePhone("34600000000")` → 11 dígitos → **válido**. Hallazgo de esta auditoría |
+| Qué pasaba de verdad | **Build servido**: el checkout **creaba el pedido** y redirigía a `wa.me/34600000000`. El pedido quedaba `pending` y nadie se enteraba |
+| Ahora rechaza | **Build servido**, invocando la Server Action: `CHECKOUT_NOT_CONFIGURED` y el recuento de pedidos **no cambia** |
+| **CONTROL POSITIVO** | Con un número real el pedido **sí** se crea, el recuento sube exactamente 1 y el enlace usa `wa.me/34600112233`. Es lo que prueba que el rechazo lo causa el número |
+| El cliente no ve el número | El mensaje de error no contiene `34600000000` |
+| Un solo predicado | Panel y checkout llaman al mismo `isWhatsAppConfigured`: no pueden discrepar |
+| El panel lo dice | Aviso rojo en `/admin` («La tienda no puede recibir pedidos», con enlace) y junto al campo en `/admin/ajustes` |
+| Guardarlo se rechaza | POST del placeholder → no cambia nada. **CONTROL**: un número real sí se guarda por el mismo camino |
+| Sin inventar reglas | `34600000001` sigue siendo válido. Un test lee el seed y falla si el valor sembrado se separa de la lista (comprobado alterando la lista: falla con el mensaje exacto) |
+
+### B · Las fotos rotas (DEC-066, migración 0037)
+
+| Pieza | Verificación |
+|---|---|
+| El estado real | **Supabase real**: 4 filas, **0 objetos**. `/_next/image` → **400 «upstream response is invalid»** en las cuatro |
+| Lo que veía el cliente | El HTML **servido** llevaba el `<img>` roto: el fallback a `MockImage` es `onError` de cliente y solo actúa tras hidratar |
+| Lo que veía Google | `og:image` y el `image` del JSON-LD `Product` servían esa URL de 400 |
+| Lo que decía el panel | P2 informaba de que los 4 productos **tenían** foto, porque la FILA existía |
+| Limpieza | Las 4 filas borradas por la 0037; el seed corregido para no recrearlas, con test que lo comprueba |
+| Detector permanente | `admin_products_with_broken_images()`, una consulta contra `storage.objects`, sin N+1 y sin `service_role` |
+| **Control positivo Y negativo** | Fila con objeto inexistente → aparece. Fila con objeto **real** → no aparece. Se borra ese objeto → **vuelve a aparecer**. Es la prueba de que mira Storage y no una marca en la fila |
+| RLS | `anon` sin datos · autenticado sin rol → **cero filas, no error** (la puerta `is_admin()` va dentro del WHERE) · mercado inactivo → cero (DEC-035) |
+| Escaparate | **Build servido**: ni la ficha ni la home llevan ya ningún `<img>` al optimizador, y el hueco honesto viaja **desde el servidor** |
+| **CONTROL POSITIVO con foto real** | Subida una imagen de verdad: la ficha anuncia `og:image` que responde **200**, el optimizador devuelve la imagen y el JSON-LD recupera `image`. El detector deja de reportarla |
+
+### ⚠️ Lo que este incremento NO arregla
+
+- **Las fotos reales siguen sin existir.** Juan no las tiene todavía; se suben desde `/admin/catalogo`. Los 4 productos del seed pasan a contarse como «publicados sin foto» en P2, **que es la verdad**.
+- **`og:image` y el `image` del JSON-LD ya no existen en esas fichas.** Es correcto —no se inventa una imagen— pero `image` es propiedad REQUERIDA del rich result de producto de Google: **seguirá incompleto hasta que haya fotos**.
+- **La tienda no vende** hasta que Juan escriba su número. Es el efecto buscado, no un fallo.
+- **NO VERIFICADO en navegador:** el render real de los avisos y el responsive. Sin navegador solo se comprueba el HTML servido y los POST sin JavaScript.
+
+**Cambio deliberado de baseline:** `product_images` pasa de **4** a **0**. Es la única cifra que cambia y lo hace por decisión explícita.
+
+**Regresión propia, encontrada y corregida:** importar `@/lib/whatsapp/phone` en `lib/admin/catalog.ts` rompió dos suites enteras con `ERR_MODULE_NOT_FOUND` —ese módulo corre bajo `node --test` y el alias no lo resuelve Node—. Corregido a ruta relativa con extensión. Y dos asserts míos sobre `og:image` eran **vacuos** (pasaban porque no había ninguna etiqueta): sustituidos por el control positivo con foto real.
+
+**Decisiones nuevas:** DEC-065 y DEC-066.
+
+**Números:** lint limpio · tsc limpio · `npm test` **836/836** (180 suites) · build correcto · **E2E 31/31** sobre el build servido · **8/8** de integración contra Supabase real · 1 migración (0037) · baseline verificado · **sin commits**.
 
 ---
 

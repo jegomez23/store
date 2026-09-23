@@ -12,9 +12,15 @@ import {
   quickNextStatus,
 } from "@/lib/admin/orders";
 import { getOperationsSummary, listOperationalQueue } from "@/lib/data/admin/orders";
-import { listLowStockVariants } from "@/lib/data/admin/catalog";
+import {
+  countProductsWithBrokenImages,
+  countProductsWithoutImage,
+  listLowStockVariants,
+} from "@/lib/data/admin/catalog";
 import { requestNow } from "@/lib/admin/clock";
 import { getActiveMarket } from "@/lib/markets";
+import { SaleStatus } from "@/components/admin/SaleStatus";
+import { getSaleChecklist } from "@/lib/store/sale-status-data";
 import { formatPrice } from "@/lib/money/format";
 
 export const dynamic = "force-dynamic";
@@ -44,26 +50,73 @@ export const dynamic = "force-dynamic";
  * Cada bloque carga en su propio `<Suspense>`: que falle el catálogo no puede
  * dejar al admin sin ver los pedidos. Sin `loading.tsx`, que rompería los 404
  * del panel (AI-DEVELOPMENT §12).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * INCREMENTO 20: LOS BLOQUES VACÍOS DEJAN DE OCUPAR SITIO
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Medido a 390×844 antes de este cambio: cuatro secciones con título, y TRES
+ * de ellas diciendo que no hay nada que hacer («ninguna variante bajo umbral»,
+ * «todavía no ha entrado ningún pedido»…). El único aviso real —4 productos
+ * publicados sin foto— caía a 825 px, fuera de la primera pantalla, empujado
+ * por títulos que no informaban de nada.
+ *
+ * Ahora un bloque sin contenido **no se pinta**. La excepción es la cola de
+ * pedidos: ahí el vacío ES la información («no hay nada pendiente»), y es la
+ * pregunta que el administrador viene a hacerle a esta pantalla.
+ *
+ * Y lo primero visible pasa a ser la acción que más veces se va a usar en una
+ * tienda que todavía se está llenando: **añadir un producto**. Antes no estaba
+ * en ninguna parte de esta página.
  */
 export default function AdminDashboardPage() {
   return (
-    <div className="flex flex-col gap-10">
-      <header className="flex flex-col gap-1">
+    <div className="flex flex-col gap-8">
+      <header className="flex flex-col gap-4">
         {/* TODO(i18n) */}
         <h1 className="text-xl font-bold tracking-tight text-black md:text-2xl">
-          Qué atender ahora
+          Inicio
         </h1>
+
+        {/*
+          ACCIÓN PRIMARIA, y única en rojo de la pantalla (docs/rules/ui.md
+          §Uso del rojo). Los avisos de abajo son tarjetas, no CTA.
+        */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Link
+            href="/admin/catalogo/nuevo"
+            className="inline-flex h-12 items-center justify-center rounded-full bg-red px-5 text-sm font-medium text-white transition-colors duration-200 ease-out hover:bg-red-dark md:h-11"
+          >
+            {/* TODO(i18n) */}
+            + Añadir producto
+          </Link>
+          <Link
+            href="/admin/catalogo"
+            className="inline-flex min-h-11 items-center text-sm text-gray-700 underline-offset-2 hover:text-black hover:underline"
+          >
+            {/* TODO(i18n) */}
+            Ver catálogo
+          </Link>
+        </div>
       </header>
+
+      {/*
+        LO PRIMERO DESPUÉS DE LA ACCIÓN (incremento 10): si la tienda no puede
+        recibir un pedido, todo lo demás es secundario. Va en su propio
+        Suspense para que un fallo aquí no deje al admin sin ver los pedidos.
+      */}
+      <Suspense fallback={null}>
+        <StoreReadiness />
+      </Suspense>
 
       <Suspense fallback={<AdminSkeleton rows={5} />}>
         <WorkQueue />
       </Suspense>
 
-      <Suspense fallback={<AdminSkeleton rows={3} />}>
-        <StockAndCatalog />
+      <Suspense fallback={null}>
+        <NeedsAttention />
       </Suspense>
 
-      <Suspense fallback={<AdminSkeleton rows={1} />}>
+      <Suspense fallback={null}>
         <StatusCounters />
       </Suspense>
     </div>
@@ -84,10 +137,17 @@ async function WorkQueue() {
           {/* TODO(i18n) */}
           Pedidos abiertos
         </h2>
-        {/* Vacío BUENO: no es un hueco, es la señal de que no hay nada que hacer. */}
+        {/*
+          Vacío BUENO: no es un hueco, es la señal de que no hay nada que hacer,
+          y es la pregunta que trae al administrador aquí. Por eso este bloque
+          SÍ se pinta vacío, al revés que los de abajo.
+
+          El texto no afirma que haya pedidos entregados —con cero pedidos era
+          falso—: dice solo lo que se ha comprobado.
+        */}
         <p className="rounded-md border border-line bg-cream px-4 py-6 text-sm text-black">
           {/* TODO(i18n) */}
-          Nada pendiente. Todos los pedidos están entregados o cancelados.
+          Ningún pedido pendiente de atender.
         </p>
       </section>
     );
@@ -189,18 +249,43 @@ async function WorkQueue() {
 
 /* ──────────────────────── Stock y salud del catálogo ────────────────────── */
 
-async function StockAndCatalog() {
+/**
+ * Problemas REALES del catálogo. Si no hay ninguno, no se pinta nada.
+ *
+ * Antes esta sección tenía siempre su título y, sin problemas, una línea que
+ * decía «ninguna variante activa está por debajo de su umbral». Esa frase no
+ * le sirve a nadie para hacer nada: solo recuerda que el sistema sabe mirar el
+ * stock. Ocupaba la mitad de la primera pantalla del móvil y empujaba abajo el
+ * aviso que sí importaba (incremento 20).
+ */
+async function NeedsAttention() {
   const market = await getActiveMarket();
-  const [summary, lowStock] = await Promise.all([
+  // Tres consultas independientes del mismo bloque, en paralelo. El recuento de
+  // "sin foto" NO viaja dentro de `admin_operations_summary`: es un contador
+  // distinto de un problema distinto, y meterlo allí habría obligado a tocar
+  // la migración 0023 para nada.
+  const [summary, lowStock, withoutImage, brokenImages] = await Promise.all([
     getOperationsSummary(market),
     listLowStockVariants(market),
+    countProductsWithoutImage(market),
+    countProductsWithBrokenImages(market),
   ]);
+
+  // Nada que atender → nada que pintar. El silencio es la respuesta.
+  if (
+    summary.unsellableProducts === 0 &&
+    withoutImage === 0 &&
+    brokenImages === 0 &&
+    lowStock.length === 0
+  ) {
+    return null;
+  }
 
   return (
     <section aria-labelledby="catalogo" className="flex flex-col gap-3">
       <h2 id="catalogo" className="text-sm font-medium text-black">
         {/* TODO(i18n) */}
-        Catálogo
+        Necesita atención
       </h2>
 
       {summary.unsellableProducts > 0 ? (
@@ -226,12 +311,51 @@ async function StockAndCatalog() {
         </Link>
       ) : null}
 
-      {lowStock.length === 0 ? (
-        <p className="text-sm text-gray-700">
+      {/*
+        SIN FOTO (incremento P2). Aviso APARTE del de arriba y deliberadamente
+        NEUTRO —borde normal, sin rojo, sin «urgente»—, porque es otra cosa:
+        estos productos se compran perfectamente, solo que el cliente los ve
+        como un recuadro gris. Sumarlo al contador rojo haría que ese rojo
+        dejara de significar «no se puede comprar», que es lo único que hoy
+        significa. Y no bloquea publicar: no es una regla de publicación.
+      */}
+      {withoutImage > 0 ? (
+        <Link
+          href="/admin/catalogo?ver=sin-foto"
+          className="rounded-md border border-line bg-white px-4 py-3 text-sm text-black transition-colors duration-200 ease-out hover:bg-cream"
+        >
           {/* TODO(i18n) */}
-          Ninguna variante activa está por debajo de su umbral.
-        </p>
-      ) : (
+          <strong>{withoutImage}</strong>{" "}
+          {withoutImage === 1 ? "producto publicado no tiene" : "productos publicados no tienen"}{" "}
+          ninguna foto. <span className="text-gray-700">Ver cuáles →</span>
+        </Link>
+      ) : null}
+
+      {/*
+        FOTO ROTA (incremento 10). Tercer aviso, distinto de los dos de arriba.
+        Aquí la fila de imagen SÍ existe —así que P2 da el producto por
+        fotografiado— pero el objeto no está en Storage: el cliente ve un hueco
+        y `og:image` sirve un 400.
+
+        NEUTRO como el de "sin foto", no rojo: el producto se compra igual, y el
+        rojo de esta pantalla significa solo «no se puede comprar». Lo que lo
+        hace peor que "sin foto" no es la gravedad, es que el panel afirmaba lo
+        contrario; por eso el texto dice «apunta a una foto que ya no está».
+      */}
+      {brokenImages > 0 ? (
+        <Link
+          href="/admin/catalogo?ver=foto-rota"
+          className="rounded-md border border-line bg-white px-4 py-3 text-sm text-black transition-colors duration-200 ease-out hover:bg-cream"
+        >
+          {/* TODO(i18n) */}
+          <strong>{brokenImages}</strong>{" "}
+          {brokenImages === 1 ? "producto apunta" : "productos apuntan"} a una foto
+          que ya no está en el almacenamiento: el cliente ve un hueco.{" "}
+          <span className="text-gray-700">Ver cuáles →</span>
+        </Link>
+      ) : null}
+
+      {lowStock.length === 0 ? null : (
         <>
           <ul className="flex flex-col gap-1.5">
             {lowStock.map((variant) => (
@@ -282,21 +406,13 @@ async function StatusCounters() {
   const market = await getActiveMarket();
   const summary = await getOperationsSummary(market);
 
-  if (summary.ordersTotal === 0) {
-    return (
-      <section aria-labelledby="contadores" className="flex flex-col gap-2">
-        <h2 id="contadores" className="text-sm font-medium text-black">
-          {/* TODO(i18n) */}
-          Por estado
-        </h2>
-        <p className="text-sm text-gray-700">
-          {/* TODO(i18n) */}
-          Todavía no ha entrado ningún pedido. Aparecerán aquí en cuanto alguien
-          complete el checkout.
-        </p>
-      </section>
-    );
-  }
+  /*
+    Sin pedidos no hay nada que contar: antes se pintaba un título y una frase
+    explicando que aparecerían pedidos cuando alguien comprase. Eso no es
+    información operativa, es el sistema describiéndose a sí mismo
+    (incremento 20).
+  */
+  if (summary.ordersTotal === 0) return null;
 
   return (
     <section aria-labelledby="contadores" className="flex flex-col gap-2">
@@ -328,4 +444,41 @@ async function StatusCounters() {
       </p>
     </section>
   );
+}
+
+/**
+ * ¿PUEDE LA TIENDA RECIBIR UN PEDIDO? (incremento 10)
+ *
+ * Hasta este incremento la respuesta era NO y no había forma de saberlo: el
+ * número de WhatsApp seguía siendo el del seed (`34600000000`), el checkout lo
+ * daba por válido —tiene 11 dígitos— y mandaba al cliente a un chat que no es
+ * el de la tienda. El pedido quedaba `pending` y nadie se enteraba.
+ *
+ * Desde DEC-065 el checkout se niega a vender en ese estado, así que este aviso
+ * no es informativo: explica por qué la tienda no está vendiendo. De ahí el
+ * rojo, que en este panel significa exactamente eso.
+ *
+ * INCREMENTO 15: la respuesta ya no se calcula aquí. `resolveSaleBlockers`
+ * (a través de `getSaleBlockers`, incremento 16)
+ * (`lib/store/sale-status.ts`) es la ÚNICA definición de «se puede vender», y
+ * suma el segundo bloqueo real que este aviso no miraba: sin ningún método de
+ * entrega activo tampoco se puede completar un pedido. Si el panel dijera
+ * «listo» mientras el cliente no puede comprar, el aviso sería peor que no
+ * tenerlo.
+ */
+async function StoreReadiness() {
+  const market = await getActiveMarket();
+
+  // INCREMENTO 16: la carga también deja de estar copiada. `getSaleBlockers`
+  // hace las dos consultas y llama a `resolveSaleBlockers`; `/checkout` usa
+  // exactamente la misma función, así que el panel y la tienda no pueden
+  // responder cosas distintas a la misma pregunta.
+  const checks = await getSaleChecklist(market);
+
+  // Cuando la tienda vende, este panel no dice nada: el resumen es para lo que
+  // hay que atender, y "todo bien" no es una tarea. El estado completo vive
+  // en /admin/ajustes, que desde el incremento 17 lo enseña como lista.
+  if (checks.every((check) => check.passed)) return null;
+
+  return <SaleStatus checks={checks} linkToSettings />;
 }
