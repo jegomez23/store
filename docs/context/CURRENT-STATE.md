@@ -919,7 +919,29 @@ Dos cosas siguen esperando a Juan:
 
 Antes del deploy (Fase 11) quedan además: el backfill del blur de las 4 imágenes del seed y el redirect 301 al cambiar un slug. **CSP y HSTS ya están** (DEC-086), a falta de cargarlos en un navegador.
 
-⚠️ **El proyecto de Supabase no responde** (`https://xyxxpnwzmmgarnrfmxax.supabase.co` → sin respuesta; internet sí funciona), y no hay Docker en esta máquina para levantar uno local. Consecuencia medida: los 14 ficheros `*.integration.test.ts` fallan con `fetch failed` y **`next build` falla** al recoger los datos de `/producto/[slug]`. Nada de eso es un fallo de código. Reanudar el proyecto en el dashboard de Supabase desbloquea los tests de integración, el build y toda verificación en navegador.
+⚠️ **El proyecto de Supabase ya no existe en el DNS** (medido el 2026-09-23). No es «lento» ni «pausado»: el nombre no resuelve.
+
+```
+nslookup xyxxpnwzmmgarnrfmxax.supabase.co   → Non-existent domain
+nslookup … 1.1.1.1                          → sin respuesta (igual que un ref inventado)
+nslookup supabase.co 1.1.1.1                → 76.76.21.21  (control: el DNS funciona)
+curl https://supabase.com                    → 200          (control: hay internet)
+```
+
+Un proyecto **pausado** sigue resolviendo; uno cuyo host desaparece del DNS está **suspendido o eliminado**. Recuperarlo no es «arrancarlo»: si el proyecto ya no está, hay que crear uno nuevo, volver a aplicar las 44 migraciones (`npm run db:push`), sembrar (`db:push:seed`), regenerar `types/database.types.ts` y actualizar `.env.local`. **Es una acción de Juan; no se toca el esquema ni el código para disimularlo.**
+
+Y no hay alternativa local: esta máquina **no tiene Docker ni Podman**, así que `supabase start` tampoco levanta nada.
+
+Consecuencia medida, toda ella bloqueada por esto y **ninguna por el código**:
+
+| Comprobación | Estado |
+|---|---|
+| 14 ficheros `*.integration.test.ts` | ⬜ `TypeError: fetch failed` |
+| `npm run build` | ⬜ falla al recoger datos de `/producto/[slug]` (`MarketResolutionError`) |
+| `next start` | ⬜ depende del build |
+| CSP real en Chrome 390×844 (DEC-086) | ⬜ depende de `next start` |
+| Recorrido de tienda, panel y checkout en navegador | ⬜ depende de `next start` |
+| Calidad de una sugerencia real de IA (incremento 20) | ⬜ además falta `ANTHROPIC_API_KEY` |
 
 ---
 
