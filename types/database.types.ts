@@ -875,6 +875,7 @@ export type Database = {
       }
       settings: {
         Row: {
+          ai_assist_enabled: boolean
           contact_email: string | null
           facebook_url: string | null
           instagram_url: string | null
@@ -888,6 +889,7 @@ export type Database = {
           whatsapp_number: string
         }
         Insert: {
+          ai_assist_enabled?: boolean
           contact_email?: string | null
           facebook_url?: string | null
           instagram_url?: string | null
@@ -901,6 +903,7 @@ export type Database = {
           whatsapp_number: string
         }
         Update: {
+          ai_assist_enabled?: boolean
           contact_email?: string | null
           facebook_url?: string | null
           instagram_url?: string | null

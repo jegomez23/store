@@ -39,7 +39,7 @@ Con el incremento **20**, el panel deja de enseñar todo lo que el sistema sabe 
 - **Capa de asistencia por IA** (`lib/ai/`): un puerto `ProductAssistant`, un adaptador sobre la API de Claude y una Server Action que **no puede escribir nada**. La IA propone nombre, descripción, categoría y color; lo que no se ve en una foto **no existe en el tipo de la sugerencia** (DEC-083, DEC-084).
 - **Panel simplificado** (DEC-085): los bloques sin contenido dejan de pintarse, el menú se separa entre operar y configurar sin perder ninguna ruta, y no hay ni una métrica de vanidad ni una gráfica.
 
-**Dependencia nueva, justificada y registrada:** `@anthropic-ai/sdk` ^0.125.0 (12 MB en `node_modules`, **0 bytes en el bundle de cliente**: el adaptador es `server-only`). Se usa por el tipado de la salida estructurada, los errores tipados y el manejo de imágenes base64; hacerlo con `fetch` a mano habría significado reescribir eso peor.
+~~**Dependencia nueva:** `@anthropic-ai/sdk`~~ — **RETIRADA en el incremento 21** (DEC-087). El proveedor pasó a ser Gemini y su API es JSON plano, así que el adaptador habla por `fetch`: el proyecto vuelve a tener **cero dependencias de IA**.
 
 ⚠️ **La integración con el proveedor NO está verificada de extremo a extremo, y no se va a decir que sí.** Este entorno **no tiene `ANTHROPIC_API_KEY`**. Lo verificado en Chrome real es: (a) sin clave, el botón sale desactivado, la pantalla lo explica y **crear un producto funciona igual**; (b) con una clave que existe pero no vale, la petición **sale de verdad** hacia el proveedor, vuelve un 401, la pantalla dice «El asistente no ha podido ayudar esta vez. Rellena la ficha a mano.» sin jerga ni códigos, no se rellena ningún campo a medias y el formulario sigue guardando. **Lo que falta por comprobar es la calidad de una sugerencia real**, y para eso hace falta una clave válida de Juan.
 
@@ -932,7 +932,7 @@ Antes del deploy (Fase 11) quedan además: el backfill del blur de las 4 imágen
 | HSTS | aparece solo con build HTTPS: `max-age=31536000; includeSubDomains`, sin `preload` |
 | Alta de producto con foto real | producto en `draft`, WebP en Storage, `is_primary`, blur generado en servidor |
 | Borrador en público | 404 y fuera del `sitemap.xml` |
-| IA | **fallback verificado**: sin `ANTHROPIC_API_KEY` el botón sale deshabilitado con «Asistente no configurado: rellena la ficha a mano» y el alta funciona igual |
+| IA | **fallback verificado**: sin clave de proveedor el botón sale deshabilitado con «Asistente no configurado: rellena la ficha a mano» y el alta funciona igual |
 | Objetivos táctiles <44 px en `/admin` | ninguno |
 | Scroll horizontal a 390 px | ninguno |
 | Baseline | restaurado: 4 productos, 9 variantes, 0 imágenes, 0 pedidos, 1 perfil, 1 usuario, bucket vacío |
@@ -963,11 +963,11 @@ Consecuencia medida, toda ella bloqueada por esto y **ninguna por el código**:
 | `next start` | ⬜ depende del build |
 | CSP real en Chrome 390×844 (DEC-086) | ⬜ depende de `next start` |
 | Recorrido de tienda, panel y checkout en navegador | ⬜ depende de `next start` |
-| Calidad de una sugerencia real de IA (incremento 20) | ⬜ además falta `ANTHROPIC_API_KEY` |
+| Calidad de una sugerencia real de IA (incremento 20) | ⬜ además falta la clave del proveedor |
 
 </details>
 
-**Único pendiente que sobrevive a la verificación:** la **calidad de una sugerencia real de IA**. Sigue sin haber `ANTHROPIC_API_KEY`, así que lo probado es el camino sin asistente (escenario B). Lo demás está verde.
+**Único pendiente que sobrevive a la verificación:** la **calidad de una sugerencia real de IA**. Sigue sin haber clave de proveedor —desde el incremento 21 es `GEMINI_API_KEY`, del tramo gratuito—, así que lo probado es el camino sin asistente (escenario B). Lo demás está verde.
 
 ---
 
@@ -986,3 +986,33 @@ Consecuencia medida, toda ella bloqueada por esto y **ninguna por el código**:
 | 2026-09-02 | Fase 8 | **La tienda pasa a poder llenarse sin SQL.** CMS de catálogo: CRUD de productos con SEO, matriz de variantes atómica (migración `0021`), categorías con jerarquía, imágenes en Storage con conversión a WebP en servidor (**×13,2 menos espacio**, DEC-036), editor de home y ajustes. Migración correctiva `0020` aplicada **antes** del CMS: el admin ya no puede escribir en un mercado inactivo (DEC-035), DEC-022 completada en las 3 tablas que la `0016` se dejó, buckets endurecidos y unicidad real de la imagen principal. **Tres problemas reales corregidos**: escritura cruzada ES→CO, DEC-022 incumplida y —el más grave— **la invalidación por patrón no invalidaba nada**, así que un producto despublicado seguía comprándose (DEC-037). Roadmap renumerado (DEC-038). 391 tests + 78 comprobaciones end-to-end + 53 de integración nuevas. Una dependencia nueva aprobada: `sharp` |
 | 2026-09-02 | Fase 9 | **La tienda pasa a ser indexable.** `robots.ts`, `sitemap.ts` (solo contenido público y todas sus URLs comprobadas a 200), metadata canónica + OG con la foto real, JSON-LD `Product`/`BreadcrumbList`, OG image de la home con `next/og` y placeholder blur generado en servidor (migración `0022`, DEC-040). **Matriz de invalidación medida** (DEC-041): se reprodujo primero la deuda de Fase 8 —resultó NO reproducible: `revalidatePath('/', 'layout')` sí invalida las fichas— y se corrigió un fallo todavía vivo: el panel de pedidos seguía invalidando por patrón, así que **cancelar un pedido devolvía stock que la ficha no mostraba**. El sitemap pasa a invalidarse con cada mutación de producto. Headers de seguridad (DEC-042). 438 tests + 75 comprobaciones E2E + 16 del blur + 12 de integración nuevas. Sin dependencias nuevas. **CWV sin medir: no hay navegador** |
 | 2026-09-02 | Fase 7 | **La tienda pasa a ser operable.** Auth de admin + `proxy.ts` (DEC-031); migración `0019` con la máquina de estados en PostgreSQL (DEC-032) y devolución de stock al cancelar (DEC-033); data layer admin sin service role y con guard por función (DEC-034). Panel de pedidos completo; catálogo y ajustes mínimos. **Dos debilidades reales corregidas** (cookie sin `httpOnly`; el guard del layout no frenaba el render de la página hermana en RSC) y **un bug de comportamiento** (`loading.tsx` convertía el 404 del detalle en 200). 295 tests + 78 comprobaciones end-to-end + 39 de RLS + 38 de sesión. Sin dependencias nuevas |
+
+---
+
+## Incremento 21 — La ayuda con IA se enciende, se apaga y deja de costar dinero: COMPLETADO
+
+Última actualización: 2026-09-24. **Migración `0045`.**
+
+**Qué lo motivó, medido:** con la clave real de Anthropic configurada, la API devolvía `400 invalid_request_error · "Your credit balance is too low to access the Anthropic API"`. El asistente estaba bien construido y no proponía nada. Y no había forma de apagarlo sin desplegar.
+
+**Qué se hizo:**
+
+| Antes | Después |
+|---|---|
+| El asistente estaba «activo» si existía la clave | Interruptor en `/admin/ajustes` (`settings.ai_assist_enabled`, 0045), **apagado por defecto** |
+| Un único booleano: «configurado» o no | Tres estados (`OFF`, `NOT_CONFIGURED`, `READY`) con mensajes distintos, porque se arreglan en sitios distintos |
+| Proveedor de pago, sin saldo | **Gemini Flash, tramo gratuito** (permanente, sin tarjeta, 10/min y 1.500/día) |
+| `@anthropic-ai/sdk` (12 MB) | **Retirada.** `fetch` contra JSON plano: cero dependencias de IA |
+| El guardia vivía en el botón | El guardia vive **también en la Server Action**, antes de tocar la foto |
+
+**Verificación (Chrome 153 headless, 390×844, build servido):**
+
+- IA apagada → botón desactivado, «La ayuda con IA está desactivada. Puedes activarla en Ajustes» y enlace a la sección.
+- Encender desde `/admin/ajustes` → «Ayuda con IA activada», y aparece el aviso de que falta el proveedor.
+- Encendida sin clave → mensaje **distinto**: «El asistente no está configurado. Rellena la ficha a mano».
+- **Guardia del servidor**: con la IA apagada, quitando el `disabled` desde la consola y pulsando, la action responde que está desactivada, **no se rellena ningún campo** y **no sale ni una petición externa del navegador**.
+- `anon` leyendo la columna nueva → **401** (nace privada, 0041).
+- Cero violaciones de CSP, cero errores de consola, cero objetivos táctiles por debajo de 44 px, sin scroll horizontal.
+- `npm test` **1170/1170** (30 nuevos) · lint, tsc y build verdes · baseline restaurado.
+
+⬜ **Lo que NO está verificado, y no se finge:** la **calidad de una sugerencia real**. Este entorno no tiene `GEMINI_API_KEY`. Se consigue gratis y sin tarjeta en <https://aistudio.google.com/apikey>; con ella puesta y el interruptor encendido, queda probar una foto real.

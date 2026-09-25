@@ -269,35 +269,44 @@ test("no se manda al proveedor ningún dato de cliente, pedido ni proveedor", ()
 });
 
 test("la clave del proveedor sale del entorno y NUNCA está escrita en el código", () => {
-  const adapter = read("lib/ai/anthropic-assistant.ts");
-  assert.ok(adapter.includes("process.env.ANTHROPIC_API_KEY"));
+  const adapter = read("lib/ai/gemini-assistant.ts");
+  assert.ok(adapter.includes("process.env.GEMINI_API_KEY"));
   assert.ok(adapter.includes('import "server-only"'), "el adaptador es solo de servidor");
 
   // Ni aquí ni en ninguna parte del repositorio: una clave real empieza así.
   for (const file of [
-    "lib/ai/anthropic-assistant.ts",
+    "lib/ai/gemini-assistant.ts",
     "lib/ai/product-assistant.ts",
     "app/admin/(panel)/catalogo/nuevo/ai-actions.ts",
     "components/admin/NewProductFlow.tsx",
     "app/admin/(panel)/catalogo/nuevo/page.tsx",
   ]) {
-    assert.equal(read(file).includes("sk-ant-"), false, `${file} contiene una clave`);
+    // Prefijos reales de clave: Anthropic (`sk-ant-`) y Google (`AIza`).
+    // El primero se mantiene aunque ese adaptador ya no exista: una clave
+    // pegada por error no deja de ser una clave pegada por error.
+    for (const prefijo of ["sk-ant-", "AIza"]) {
+      assert.equal(
+        read(file).includes(prefijo),
+        false,
+        `${file} contiene una clave (${prefijo}…)`,
+      );
+    }
   }
 });
 
 test("la clave no puede llegar al navegador: nada de NEXT_PUBLIC", () => {
-  const adapter = read("lib/ai/anthropic-assistant.ts");
+  const adapter = read("lib/ai/gemini-assistant.ts");
   // Se mira el USO, no la palabra: la cabecera del archivo explica justamente
   // que la clave no lleva ese prefijo.
   assert.equal(adapter.includes("process.env.NEXT_PUBLIC"), false);
   // El componente de cliente solo recibe un booleano.
   const flow = read("components/admin/NewProductFlow.tsx");
-  assert.equal(flow.includes("ANTHROPIC"), false);
+  assert.equal(flow.includes("GEMINI"), false);
   assert.equal(flow.includes("process.env"), false);
 });
 
 test("el adaptador devuelve fallos tipados y no lanza", () => {
-  const adapter = read("lib/ai/anthropic-assistant.ts");
+  const adapter = read("lib/ai/gemini-assistant.ts");
   for (const reason of ["NOT_CONFIGURED", "TIMEOUT", "PROVIDER_ERROR", "UNUSABLE_RESPONSE", "IMAGE_REJECTED"]) {
     assert.ok(adapter.includes(reason), `falta el fallo ${reason}`);
   }
@@ -319,7 +328,18 @@ test("la pantalla de crear producto funciona sin IA", () => {
   assert.ok(flow.includes("createProductWithPhotoAction"));
   // Y el botón de analizar se desactiva solo, sin bloquear el resto.
   assert.ok(flow.includes("assistantAvailable"));
-  assert.ok(flow.includes("Asistente no configurado"));
+  /*
+    Incremento 21: el texto del «no» ya no está escrito aquí. Hay tres estados
+    —apagada, sin proveedor y lista— y sus mensajes viven en
+    `AVAILABILITY_MESSAGE`, para que apagada y sin configurar no digan lo
+    mismo (DEC-087). Lo que se comprueba es que la pantalla los consume.
+  */
+  assert.ok(flow.includes("AVAILABILITY_MESSAGE"));
+  assert.equal(
+    flow.includes("Asistente no configurado"),
+    false,
+    "el mensaje no se reescribe en el componente",
+  );
 });
 
 test("la IA no publica: el producto nace en borrador", () => {

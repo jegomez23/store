@@ -2,10 +2,19 @@
 
 import { requireAdmin } from "@/lib/admin/auth";
 import { checkImageUpload } from "@/lib/admin/images";
-import { createAnthropicProductAssistant } from "@/lib/ai/anthropic-assistant";
+import {
+  AVAILABILITY_MESSAGE,
+  isAssistantUsable,
+  resolveAssistantAvailability,
+} from "@/lib/ai/availability";
+import { createGeminiProductAssistant } from "@/lib/ai/gemini-assistant";
 import type { AssistState } from "@/lib/ai/assist-state";
 import { isUsefulSuggestion, type AssistantFailure } from "@/lib/ai/product-assistant";
-import { listCategoriesForAdmin, listColors } from "@/lib/data/admin/cms";
+import {
+  getFullSettingsForAdmin,
+  listCategoriesForAdmin,
+  listColors,
+} from "@/lib/data/admin/cms";
 
 import { getActiveMarket } from "@/lib/markets";
 
@@ -75,6 +84,31 @@ export async function analyzeProductPhotoAction(
     };
   }
 
+  const market = await getActiveMarket();
+
+  /*
+    ⚠️ EL INTERRUPTOR SE COMPRUEBA AQUÍ, NO SOLO EN LA PANTALLA (incremento 21).
+
+    Una Server Action es un endpoint POST público: que el botón salga
+    desactivado no impide que alguien la invoque a mano, y entonces la foto
+    saldría hacia el proveedor con la IA «apagada». El estado de `settings`
+    manda, y se lee ANTES de tocar la imagen.
+  */
+  const assistant = createGeminiProductAssistant();
+  const settings = await getFullSettingsForAdmin(market);
+  const availability = resolveAssistantAvailability({
+    enabled: settings?.aiAssistEnabled ?? false,
+    configured: assistant.isConfigured(),
+  });
+
+  if (!isAssistantUsable(availability)) {
+    return {
+      status: "failed",
+      result: null,
+      message: AVAILABILITY_MESSAGE[availability],
+    };
+  }
+
   const bytes = new Uint8Array(await file.arrayBuffer());
 
   // Mismo criterio que el catálogo: manda el CONTENIDO, no lo que diga el
@@ -84,16 +118,6 @@ export async function analyzeProductPhotoAction(
     return { status: "failed", result: null, message: check.error };
   }
 
-  const assistant = createAnthropicProductAssistant();
-  if (!assistant.isConfigured()) {
-    return {
-      status: "failed",
-      result: null,
-      message: failureMessage("NOT_CONFIGURED"),
-    };
-  }
-
-  const market = await getActiveMarket();
   const [categories, colors] = await Promise.all([
     listCategoriesForAdmin(market),
     listColors(),

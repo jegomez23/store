@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AiAssistForm } from "@/components/admin/AiAssistForm";
 import { LogoForm } from "@/components/admin/LogoForm";
 import { StoreSettingsForm } from "@/components/admin/StoreSettingsForm";
 import { WhatsAppNumberForm } from "@/components/admin/WhatsAppNumberForm";
@@ -11,6 +12,8 @@ import { listShippingMethodsForAdmin } from "@/lib/data/shipping";
 import { getActiveMarket } from "@/lib/markets";
 import { SaleStatus } from "@/components/admin/SaleStatus";
 import { hasBlocker, resolveSaleBlockers, resolveSaleChecklist } from "@/lib/store/sale-status";
+import { resolveAssistantAvailability } from "@/lib/ai/availability";
+import { createGeminiProductAssistant } from "@/lib/ai/gemini-assistant";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +65,17 @@ export default async function AdminSettingsPage() {
   // decidiendo el aviso que va junto al campo de WhatsApp.
   const checks = resolveSaleChecklist(saleInput);
   const blockers = resolveSaleBlockers(saleInput);
+
+  /*
+    Mismo criterio que usa `/admin/catalogo/nuevo`, con los datos que esta
+    pantalla ya tiene: el interruptor de la BD y si hay clave en el servidor.
+    Distinguir «apagada» de «encendida pero sin proveedor» es justo lo que
+    evita que el administrador vea «Activada» junto a un botón muerto.
+  */
+  const assistantAvailability = resolveAssistantAvailability({
+    enabled: settings?.aiAssistEnabled ?? false,
+    configured: createGeminiProductAssistant().isConfigured(),
+  });
 
   return (
     <div className="flex max-w-2xl flex-col gap-8">
@@ -225,7 +239,38 @@ export default async function AdminSettingsPage() {
             <LogoForm logoPublicUrl={settings.logoPublicUrl} storeName={settings.storeName} />
           </section>
 
-          {/* ─────────────────── 4. Solo lectura, al final ─────────────── */}
+          {/* ─────────────────── 4. Herramientas del panel ──────────────── */}
+          {/*
+            Va DESPUÉS de la identidad y ANTES de la tabla de solo lectura: no
+            es urgente —apagarla no impide vender, y encenderla tampoco hace
+            vender más—, pero es lo único de esta página que decide si una foto
+            sale del proyecto, así que no puede quedar enterrado al final.
+
+            Deliberadamente NO está en el estado de venta de arriba: la IA no
+            es un bloqueo de venta y `SALE_CHECKS` no crece por esto (DEC-077).
+          */}
+          <section
+            id="ia"
+            aria-labelledby="ia-titulo"
+            className="flex scroll-mt-20 flex-col gap-3"
+          >
+            <div className="flex flex-col gap-1">
+              {/* TODO(i18n) */}
+              <h2 id="ia-titulo" className="text-base font-medium text-black">
+                Ayuda con IA
+              </h2>
+              <p className="text-xs text-gray-400">
+                Opcional. El alta de producto funciona igual con esto apagado.
+              </p>
+            </div>
+
+            <AiAssistForm
+              enabled={settings.aiAssistEnabled}
+              availability={assistantAvailability}
+            />
+          </section>
+
+          {/* ─────────────────── 5. Solo lectura, al final ─────────────── */}
           {/*
             La fila del logo se va de aquí en el incremento 17: decía «subida
             pendiente» y ya no lo está. Enseñar la ruta cruda del objeto no le

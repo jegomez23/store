@@ -2,7 +2,13 @@
 
 import { useActionState, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
+import Link from "next/link";
 import { Field, Feedback, TextArea, TextInput } from "@/components/admin/FormBits";
+import {
+  AVAILABILITY_MESSAGE,
+  isAssistantUsable,
+  type AssistantAvailability,
+} from "@/lib/ai/availability";
 import {
   createProductWithPhotoAction,
   type CatalogActionState,
@@ -132,12 +138,19 @@ function SuggestedMark({ shown }: { shown: boolean }) {
 
 export function NewProductFlow({
   categories,
-  assistantAvailable,
+  availability,
 }: {
   categories: CategoryChoice[];
-  /** `false` = no hay proveedor de IA configurado. Se dice y se sigue. */
-  assistantAvailable: boolean;
+  /**
+   * Estado de la ayuda con IA, resuelto en el SERVIDOR (incremento 21). Al
+   * cliente no viaja ni la clave ni el ajuste: solo cuál de los tres estados
+   * es. `OFF` lo arregla el administrador en Ajustes; `NOT_CONFIGURED`, el
+   * despliegue.
+   */
+  availability: AssistantAvailability;
 }) {
+  const assistantAvailable = isAssistantUsable(availability);
+  const availabilityMessage = AVAILABILITY_MESSAGE[availability];
   const [saveState, saveAction] = useActionState(createProductWithPhotoAction, INITIAL);
   const [assist, assistAction] = useActionState(analyzeProductPhotoAction, ASSIST_IDLE);
 
@@ -249,11 +262,26 @@ export function NewProductFlow({
             onPress={() => setLastAction("analyze")}
           />
           <p className="text-xs text-gray-400">
-            {/* TODO(i18n) */}
-            {assistantAvailable
-              ? "Propone nombre, descripción y categoría mirando la foto. Tú decides qué se guarda."
-              : "Asistente no configurado: rellena la ficha a mano."}
+            {/*
+              TODO(i18n)
+
+              El texto del «no» NO se decide aquí: viene de
+              `AVAILABILITY_MESSAGE`, porque apagada y sin configurar son cosas
+              distintas y se arreglan en sitios distintos (DEC-087). Esta
+              pantalla solo lo pinta.
+            */}
+            {availabilityMessage ??
+              "Propone nombre, descripción y categoría mirando la foto. Tú decides qué se guarda."}
           </p>
+          {availability === "OFF" ? (
+            <Link
+              href="/admin/ajustes#ia"
+              className="inline-flex min-h-11 items-center text-xs text-gray-700 underline underline-offset-2 hover:text-black"
+            >
+              {/* TODO(i18n) */}
+              Activar la ayuda con IA en Ajustes
+            </Link>
+          ) : null}
         </div>
 
         {assist.message ? (

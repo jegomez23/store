@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { NewProductFlow } from "@/components/admin/NewProductFlow";
-import { createAnthropicProductAssistant } from "@/lib/ai/anthropic-assistant";
-import { listCategoriesForAdmin } from "@/lib/data/admin/cms";
+import { resolveAssistantAvailability } from "@/lib/ai/availability";
+import { createGeminiProductAssistant } from "@/lib/ai/gemini-assistant";
+import { getFullSettingsForAdmin, listCategoriesForAdmin } from "@/lib/data/admin/cms";
 import { getActiveMarket } from "@/lib/markets";
 
 /**
@@ -14,9 +15,10 @@ import { getActiveMarket } from "@/lib/markets";
  * se decide lo que hace falta para que el producto exista; el resto se edita
  * después en la ficha, con `ProductForm` intacto.
  *
- * Si no hay proveedor de IA configurado, la pantalla funciona igual: el botón
- * de analizar queda desactivado y lo dice. Esto se comprueba en el servidor,
- * donde vive la clave, y solo viaja al cliente un booleano.
+ * La pantalla funciona igual con la IA apagada, sin proveedor configurado o
+ * con el proveedor caído: el botón de analizar queda desactivado y dice cuál
+ * de las tres cosas pasa. El estado se resuelve en el SERVIDOR —donde viven la
+ * clave y el ajuste— y al cliente solo viaja cuál de los tres es (DEC-087).
  */
 
 export const dynamic = "force-dynamic";
@@ -28,8 +30,15 @@ export const metadata: Metadata = {
 
 export default async function NewProductPage() {
   const market = await getActiveMarket();
-  const categories = await listCategoriesForAdmin(market);
-  const assistantAvailable = createAnthropicProductAssistant().isConfigured();
+  const [categories, settings] = await Promise.all([
+    listCategoriesForAdmin(market),
+    getFullSettingsForAdmin(market),
+  ]);
+
+  const availability = resolveAssistantAvailability({
+    enabled: settings?.aiAssistEnabled ?? false,
+    configured: createGeminiProductAssistant().isConfigured(),
+  });
 
   return (
     <div className="flex max-w-2xl flex-col gap-5">
@@ -63,7 +72,7 @@ export default async function NewProductPage() {
             name: category.name,
             slug: category.slug,
           }))}
-          assistantAvailable={assistantAvailable}
+          availability={availability}
         />
       )}
     </div>

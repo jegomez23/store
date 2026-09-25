@@ -4,6 +4,19 @@
 
 ---
 
+## Incremento 21 — La IA se enciende y se apaga, y deja de ser de pago (2026-09-24)
+
+- **Interruptor «Ayuda con IA» en `/admin/ajustes`** (migración `0045`, DEC-087). `settings.ai_assist_enabled` **nace apagado**: mandar una foto a un tercero es una decisión, no un estado inicial. Columna **privada** por herencia de la 0041 — comprobado: `anon` recibe `401`.
+- **Proveedor nuevo: Gemini Flash, tramo gratuito** (permanente, sin tarjeta, 1.500 peticiones/día). Motivo medido: con la clave de Anthropic, la API devolvía `400 · "Your credit balance is too low"`, así que el asistente no proponía nada.
+- **Se retira `@anthropic-ai/sdk`.** El adaptador nuevo habla por `fetch`: el proyecto vuelve a tener **cero dependencias de IA**.
+- **Dos condiciones en un solo sitio** (`resolveAssistantAvailability`): interruptor encendido **y** proveedor configurado. Se distinguen porque se arreglan en sitios distintos, y hay un test que impide que una pantalla evalúe el criterio por su cuenta.
+- **El interruptor se comprueba también en la Server Action**, antes de leer los bytes de la foto: el botón desactivado no es la defensa.
+- **Lo que sale del proyecto se dice en la pantalla**, no en la documentación: la foto va a Google y, en el plan gratuito, Google puede usarla para mejorar sus productos. Ningún dato de cliente, pedido ni proveedor puede salir.
+- **Verificación:** `npm test` **1170/1170** (30 nuevos) · lint, tsc y build verdes · **E2E en Chrome 153 a 390×844**: apagada, encendida sin clave, y el guardia del servidor con el `disabled` quitado a mano — la action rechaza, no se rellena ningún campo y **no sale ni una petición externa del navegador**. Baseline restaurado.
+- ⬜ **Sin verificar: la calidad de una sugerencia real.** Falta `GEMINI_API_KEY` en este entorno. No se simula.
+
+---
+
 ## Verificación real de la base (2026-09-23)
 
 Con el proyecto de Supabase de vuelta, se ejecutó entera la verificación que estaba bloqueada. **Sin cambios de comportamiento**: solo documentación.

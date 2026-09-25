@@ -1782,7 +1782,7 @@ La causa: `isOutOfStock` exigía `selectedVariant !== null`, así que sin varian
 - **La imagen se valida por magic bytes antes de salir del servidor**, con la misma función que el catálogo (`checkImageUpload`). Ni `File.type` ni la extensión deciden qué se manda.
 - **Lo que sale del proyecto está acotado por el tipo**: los bytes de UNA fotografía que el administrador acaba de elegir, más las categorías y los colores, que son públicos y se pintan en la tienda. `AssistantContext` **no tiene forma** de contener un cliente, un pedido, un teléfono, un email ni un proveedor. Un test falla si esas palabras aparecen en la action.
 - **No se almacena el prompt ni la respuesta.** La sugerencia vive en la pantalla hasta que el administrador decide.
-- **La clave sale del entorno** (`ANTHROPIC_API_KEY`, sin `NEXT_PUBLIC_`), el adaptador es `server-only` y al cliente solo viaja un booleano. Un test comprueba que no hay ninguna clave escrita en el código.
+- **La clave sale del entorno** (desde el incremento 21, `GEMINI_API_KEY`; sin `NEXT_PUBLIC_`), el adaptador es `server-only` y al cliente solo viaja el estado de disponibilidad. Un test comprueba que no hay ninguna clave escrita en el código.
 
 **Alternatives:** (a) Reutilizar una action del catálogo añadiéndole un modo «sugerir»: una sola función que a veces escribe y a veces no es exactamente el error que esto evita. (b) Llamar al proveedor desde el navegador: expone la clave. (c) Confiar en la revisión humana del diff: no sobrevive a un refactor.
 
@@ -1828,3 +1828,32 @@ La causa: `isOutOfStock` exigía `selectedVariant !== null`, así que sin varian
 ✅ **Verificado en Chrome 153 headless a 390×844 sobre el build servido (2026-09-23):** trece rutas de tienda y panel **sin una sola violación de CSP**, sin errores de consola y sin recursos legítimos bloqueados. Se comprobó además que la política **bloquea de verdad** (un `fetch('data:…')` desde consola muere por `connect-src`) y que HSTS aparece —y `upgrade-insecure-requests` con él— solo cuando el build lleva un `NEXT_PUBLIC_SITE_URL` HTTPS.
 
 ⚠️ **Las cabeceras se congelan en el BUILD**, no al arrancar: `headers()` se evalúa al construir y se guarda en `.next/routes-manifest.json`. Medido — cambiar la variable con el servidor en marcha no cambió nada; tras `npm run build`, sí.
+
+## DEC-087 — La ayuda con IA es un interruptor del administrador, y el proveedor es Gemini en su tramo gratuito
+
+**Status:** Accepted *(Incremento 21, migración 0045, 2026-09-24)*
+
+**Context:** dos problemas medidos, no supuestos.
+
+1. **El proveedor de pago no llegaba a funcionar.** Con la clave real de Anthropic puesta, las tres variantes de la petición devolvieron `400 invalid_request_error · "Your credit balance is too low to access the Anthropic API"` (`request_id: req_011CfL79s3fRrWT5AZivjuFF`). El asistente estaba bien construido y no proponía nada, porque la cuenta no tenía saldo.
+2. **No había interruptor.** El asistente estaba «activo» si existía la clave. Eso no es un control del administrador: es uno del programador, y apagarlo exigía tocar el despliegue — exactamente lo que DEC-071 corrigió para el nombre de la tienda.
+
+**Decision:**
+
+- **Proveedor: Gemini (Flash), tramo gratuito.** Comprobado el 2026-09-24: tramo **permanente**, sin tarjeta, 10 peticiones/minuto y 1.500/día. Suficiente de sobra para dar de alta productos a mano. Se descartó **OpenRouter** (50 peticiones/día sin saldo y modelos gratuitos que rotan sin aviso) y se deja **Mistral/Pixtral** anotado como alternativa europea si algún día pesa más el RGPD que la calidad.
+- **Se habla por `fetch`, y se RETIRA `@anthropic-ai/sdk`.** Su API es JSON plano; el SDK no aportaba nada que no quepa en veinte líneas. El proyecto vuelve a tener **cero dependencias de IA** (regla 8 de CLAUDE.md).
+- **El interruptor vive en la base de datos** (`settings.ai_assist_enabled`, 0045), se administra en `/admin/ajustes` y **nace apagado**: mandar una foto a un tercero es una decisión, no un estado inicial.
+- **Dos condiciones, un solo sitio** (`resolveAssistantAvailability`): el interruptor del administrador Y el proveedor configurado en el servidor. Se distinguen porque se arreglan en sitios distintos —un clic frente a un despliegue—, y un único booleano acabaría diciéndole a Juan que ponga una clave que ya tiene puesta. Hay un test que impide que una pantalla evalúe el criterio por su cuenta.
+- **El interruptor se comprueba también en la Server Action**, antes de leer los bytes de la foto. Una Server Action es un endpoint POST público: que el botón salga desactivado no impide invocarla a mano.
+- **El adaptador no registra ni el cuerpo ni la respuesta**, solo el código de estado: el cuerpo lleva la foto dentro. Hay un test que lo comprueba.
+- **La lectura de la respuesta es TOLERANTE a propósito.** La API de Gemini ha movido esa forma más de una vez (`candidates[].content.parts[]`, `steps[].outputs[]`, `steps[].content[]`, `output_text`), y aquí no hay SDK que absorba el cambio. `extractJsonText` recoge todas las formas conocidas; el peor caso es `UNUSABLE_RESPONSE` y rellenar a mano, nunca una excepción.
+
+**Alternatives:** (a) **Seguir con Anthropic y pedir saldo**: es de pago y Juan dijo explícitamente que no lo quiere así. (b) **Elegir proveedor desde el panel**: dos adaptadores y una pantalla más que mantener y probar, para un negocio con un solo administrador. (c) **Interruptor por variable de entorno**: cero migraciones, pero apagarlo seguiría exigiendo un despliegue — es el problema que se quería resolver. (d) **Modelo local (Ollama)**: gratis y privado, pero el despliegue es serverless y no hay dónde ejecutarlo.
+
+**Consequences:** ⚠️ **En el tramo gratuito, Google usa el contenido para mejorar sus productos** —su documentación de precios lo dice explícitamente, y en el de pago lo niega—. Se asume a sabiendas: lo único que sale es la FOTO de un artículo que va a estar publicada en la tienda igualmente, más categorías y colores, que también son públicos. **Ningún dato de cliente, pedido, teléfono, email, dirección ni proveedor puede salir**: el tipo `AssistantContext` no tiene forma de contenerlos. La pantalla de ajustes **lo dice antes de que nadie pulse**, no en la documentación.
+
+La IA **no entra en el estado de venta**: apagarla no impide vender, y `SALE_CHECKS` no crece por esto (DEC-077). La configuración **tampoco se audita** en `admin_change_log`, que es del catálogo (DEC-070).
+
+**Verificado en Chrome 153 a 390×844 sobre el build servido:** apagada → botón desactivado, «La ayuda con IA está desactivada. Puedes activarla en Ajustes» y enlace a la sección; encendida sin clave → mensaje distinto («no está configurado»); y **el guardia del servidor**: quitando el `disabled` desde la consola y pulsando, la action responde que está desactivada, **no se rellena ningún campo y no sale ni una petición externa del navegador**. La columna nueva da **401** a `anon`, como exige la 0041.
+
+⬜ **Sigue sin verificarse la calidad de una sugerencia real**: este entorno no tiene `GEMINI_API_KEY`. Lo que está probado es la forma de la petición, la lectura de todas las formas conocidas de respuesta y el camino completo sin asistente.

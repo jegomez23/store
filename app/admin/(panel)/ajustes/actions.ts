@@ -336,3 +336,74 @@ export async function deleteShippingMethodAction(
   revalidatePath("/admin/ajustes");
   return { error: null, success: "Método eliminado. Los pedidos anteriores lo conservan." };
 }
+
+/**
+ * Enciende o apaga la ayuda con IA del alta de producto (incremento 21, 0045).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ES UN INTERRUPTOR, NO UNA CONFIGURACIÓN DE PROVEEDOR
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Aquí NO se guarda ninguna clave de API: la del proveedor vive en el entorno
+ * del servidor y no se administra desde el panel. Lo que se guarda es si Juan
+ * quiere que se use, que es una decisión suya y hasta ahora solo se podía
+ * tomar desplegando.
+ *
+ * `market_id` lo pone `getActiveMarket()`, nunca el formulario (DEC-035).
+ *
+ * NO se revalida el escaparate: esto no cambia ni una línea de la tienda
+ * pública, que ni siquiera puede leer la columna (nace privada, 0041).
+ */
+export async function updateAiAssistAction(
+  _prevState: SettingsActionState,
+  formData: FormData,
+): Promise<SettingsActionState> {
+  if (!(await requireAdmin())) return { error: FORBIDDEN, success: null };
+
+  /*
+    Un checkbox no envía nada cuando está desmarcado, así que el valor NO se
+    lee del checkbox: se lee del botón que se ha pulsado. Así el formulario
+    dice explícitamente qué quiere («activar» o «desactivar») y no hay forma de
+    apagar la IA sin querer por un campo que no viajó.
+  */
+  const intent = formData.get("intent");
+  if (intent !== "enable" && intent !== "disable") {
+    return { error: INVALID, success: null };
+  }
+  const enabled = intent === "enable";
+
+  const market = await getActiveMarket();
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("settings")
+    .update({ ai_assist_enabled: enabled })
+    .eq("market_id", market.id)
+    .select("market_id");
+
+  if (error) {
+    console.error("[admin] updateAiAssist falló", {
+      marketId: market.id,
+      code: error.code,
+      message: error.message,
+    });
+    return { error: GENERIC, success: null };
+  }
+  if (data.length === 0) {
+    return {
+      error: "Este mercado todavía no tiene configuración creada.",
+      success: null,
+    };
+  }
+
+  // Las dos pantallas que dependen del interruptor. `/admin/catalogo/nuevo` es
+  // `force-dynamic`, así que esto es red de seguridad, no el mecanismo.
+  revalidatePath("/admin/ajustes");
+  revalidatePath("/admin/catalogo/nuevo");
+
+  return {
+    error: null,
+    success: enabled
+      ? "Ayuda con IA activada."
+      : "Ayuda con IA desactivada. El alta de producto funciona igual.",
+  };
+}

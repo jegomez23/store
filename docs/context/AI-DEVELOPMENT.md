@@ -1327,7 +1327,9 @@ Lo que aporta la configuración: un `meta_pixel_id` o un token de la Conversions
 | Archivo | Qué es |
 |---|---|
 | `lib/ai/product-assistant.ts` | **El contrato y la lógica pura.** Lista blanca, lista negra, saneado, instrucciones. Sin I/O: corre bajo `node --test`. |
-| `lib/ai/anthropic-assistant.ts` | El adaptador sobre la API de Claude. `server-only`. Devuelve fallos tipados; **nunca lanza**. |
+| `lib/ai/gemini-assistant.ts` | El adaptador sobre la API de Gemini, con `fetch` y sin dependencias (incremento 21). `server-only`. Devuelve fallos tipados; **nunca lanza**. |
+| `lib/ai/gemini-shape.ts` | Cómo se arma la petición y cómo se lee la respuesta. PURO, porque `server-only` no resuelve en `node --test`. |
+| `lib/ai/availability.ts` | Las DOS condiciones —interruptor del admin y proveedor configurado— en un solo sitio (DEC-087). |
 | `lib/ai/assist-state.ts` | El estado inicial de la pantalla. Está fuera de la action **a propósito** (ver 29.5). |
 | `app/admin/(panel)/catalogo/nuevo/ai-actions.ts` | La Server Action. **No escribe nada y no puede.** |
 | `components/admin/NewProductFlow.tsx` | La pantalla: foto, cuatro campos y lo demás plegado. |

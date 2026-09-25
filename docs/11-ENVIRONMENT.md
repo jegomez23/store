@@ -23,14 +23,19 @@ NEXT_PUBLIC_MARKET=ES
 # URL pública canónica (metadataBase, sitemap, OG)
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 
-# ── Asistente de catálogo (incremento 20) — OPCIONAL ─────
+# ── Asistente de catálogo (incremento 21) — OPCIONAL ─────
 # Sin ella el panel funciona igual: «Analizar foto» sale desactivado y la
 # ficha se rellena a mano. SOLO servidor, jamás NEXT_PUBLIC_.
-# ANTHROPIC_API_KEY=<api-key>
-# ANTHROPIC_PRODUCT_MODEL=claude-opus-5
+# Y recuerda: además hay que encender el interruptor en /admin/ajustes.
+# GEMINI_API_KEY=<api-key>
+# GEMINI_PRODUCT_MODEL=gemini-3.5-flash
 ```
 
-> **`ANTHROPIC_API_KEY` es la única variable OPCIONAL del proyecto.** Es lo único que falta para que el asistente de catálogo funcione de extremo a extremo; todo lo demás está implementado y probado. Mientras no exista, la pantalla de alta lo dice y no se simula ningún resultado (DEC-084, `docs/context/AI-DEVELOPMENT.md` §29).
+> **`GEMINI_API_KEY` es la única variable OPCIONAL del proyecto** (incremento 21, DEC-087). El proveedor es Gemini en su **tramo gratuito permanente** —sin tarjeta; se saca en <https://aistudio.google.com/apikey>—, y se habla con él por `fetch`: **cero dependencias**.
+>
+> ⚠️ **La clave NO basta.** El asistente exige además que el interruptor «Ayuda con IA» esté encendido en `/admin/ajustes` (`settings.ai_assist_enabled`, migración 0045), y **nace apagado**. Las dos condiciones las resuelve `resolveAssistantAvailability`, que distingue «apagada» de «sin proveedor» porque se arreglan en sitios distintos.
+>
+> Sin cualquiera de las dos, la pantalla de alta lo dice y no se simula ningún resultado (DEC-084, `docs/context/AI-DEVELOPMENT.md` §29).
 
 > Nota (Fase 4.5): las cuatro variables `NEXT_PUBLIC_*` son consumidas realmente por la aplicación y están verificadas contra un proyecto Supabase real. `SUPABASE_SERVICE_ROLE_KEY` puede estar presente en `.env.local`, pero **ningún código de aplicación la lee todavía** (`lib/supabase/admin.ts` no existe; se creará en Fase 7).
 

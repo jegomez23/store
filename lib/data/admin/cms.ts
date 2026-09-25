@@ -417,6 +417,12 @@ export interface AdminSettingsFull {
    * la tienda se ve. `getPublicUrl` es una operación de cadena, sin red.
    */
   logoPublicUrl: string | null;
+  /**
+   * Interruptor de la ayuda con IA (0045). Estar encendido NO basta: hace
+   * falta además que el proveedor esté configurado en el servidor. La pregunta
+   * completa la responde `resolveAssistantAvailability` (DEC-087).
+   */
+  aiAssistEnabled: boolean;
 }
 
 export async function getFullSettingsForAdmin(
@@ -428,7 +434,7 @@ export async function getFullSettingsForAdmin(
   const { data, error } = await supabase
     .from("settings")
     .select(
-      "store_name, tagline, whatsapp_number, contact_email, instagram_url, tiktok_url, facebook_url, logo_url",
+      "store_name, tagline, whatsapp_number, contact_email, instagram_url, tiktok_url, facebook_url, logo_url, ai_assist_enabled",
     )
     .eq("market_id", market.id)
     .maybeSingle();
@@ -448,5 +454,6 @@ export async function getFullSettingsForAdmin(
     logoPublicUrl: data.logo_url
       ? supabase.storage.from("content").getPublicUrl(data.logo_url).data.publicUrl
       : null,
+    aiAssistEnabled: data.ai_assist_enabled,
   };
 }
