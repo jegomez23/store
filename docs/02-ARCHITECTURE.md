@@ -1,6 +1,6 @@
 # 02 — ARCHITECTURE: Arquitectura técnica de YI Store
 
-> Cómo está construido y por qué. Compatible con Next.js **16.3.3** real instalado. Decisiones de alto nivel en `docs/context/DECISIONS.md`.
+> Cómo está construido y por qué. Compatible con Next.js **16.3.8** real instalado. Decisiones de alto nivel en `docs/context/DECISIONS.md`.
 
 ---
 

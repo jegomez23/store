@@ -27,22 +27,52 @@ export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
  *     jpeg de 1,20 MB → HTTP 500 · "Body exceeded 1 MB limit"
  *
  * Es decir: una foto de móvil normal (2–5 MB) NO se podía subir, aunque la
- * validación de la aplicación y el bucket admiten 5 MB. Con `bodySizeLimit`
- * puesto a `ACTION_BODY_LIMIT_BYTES`, caben `MAX_FILES_PER_BATCH` archivos del
- * tamaño máximo permitido.
+ * validación de la aplicación y el bucket admiten 5 MB.
+ *
+ * Desde la preparación para Vercel (DEC-089) el lote ya no se manda tal cual:
+ * el navegador reduce las fotos para que el lote entero quepa en
+ * `UPLOAD_REQUEST_BUDGET_BYTES`.
  */
 export const MAX_FILES_PER_BATCH = 5;
 
 /**
- * Lo que hay que configurar en `experimental.serverActions.bodySizeLimit`.
+ * Tope de la PLATAFORMA (DEC-089): Vercel no deja pasar a una Function un
+ * cuerpo de más de **4,5 MB** —responde `413 FUNCTION_PAYLOAD_TOO_LARGE` antes
+ * de que llegue a Next— (https://vercel.com/docs/functions/limitations,
+ * «Request body size», consultado el 2026-10-10).
  *
- * El margen extra no es decorativo: los docs de Next avisan de que el límite
- * se aplica al cuerpo HTTP **crudo**, incluidas las fronteras y cabeceras que
- * añade `multipart/form-data`. Sin holgura, un lote de archivos justo en el
- * máximo se rechazaría por unos kilobytes de sobre.
+ * Hasta aquí el límite se había subido a 26 MB para que cupiera un lote de
+ * 5 × 5 MB, y en local funcionaba. En Vercel, una sola foto de móvil de
+ * 4,84 MB —la medida en el incremento 17— no habría llegado al servidor.
+ *
+ * Se usa el número más bajo de los dos posibles (4 500 000 y no 4,5 MiB).
  */
-export const ACTION_BODY_LIMIT_BYTES =
-  MAX_FILES_PER_BATCH * MAX_IMAGE_BYTES + 1024 * 1024;
+export const PLATFORM_BODY_LIMIT_BYTES = 4_500_000;
+
+/**
+ * Lo que hay que configurar en `experimental.serverActions.bodySizeLimit` y en
+ * `proxyClientMaxBodySize`: EL MISMO tope que la plataforma, para que `next
+ * start` en local rechace exactamente lo que rechazaría Vercel y el fallo se
+ * vea antes de desplegar.
+ */
+export const ACTION_BODY_LIMIT_BYTES = PLATFORM_BODY_LIMIT_BYTES;
+
+/**
+ * Lo que pueden ocupar, JUNTAS, las fotos de una petición. El resto hasta
+ * `ACTION_BODY_LIMIT_BYTES` es para las fronteras de `multipart/form-data` y
+ * los campos de texto del formulario (los docs de Next avisan de que el límite
+ * cuenta el cuerpo HTTP crudo).
+ */
+export const UPLOAD_REQUEST_BUDGET_BYTES = 4_000_000;
+
+/**
+ * Cuánto puede pesar cada foto si se envían `count` a la vez. Es lo que usa el
+ * navegador para decidir hasta dónde reducir (`components/admin/
+ * useImageShrinker.ts`).
+ */
+export function uploadBudgetPerFile(count: number): number {
+  return Math.floor(UPLOAD_REQUEST_BUDGET_BYTES / Math.max(1, Math.floor(count)));
+}
 
 export const ACCEPTED_FORMATS = ["jpeg", "png", "webp"] as const;
 export type ImageFormat = (typeof ACCEPTED_FORMATS)[number];

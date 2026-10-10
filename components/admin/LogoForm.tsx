@@ -8,6 +8,7 @@ import {
   updateLogoAction,
 } from "@/app/admin/(panel)/ajustes/logo-actions";
 import type { SettingsActionState } from "@/app/admin/(panel)/ajustes/actions";
+import { useImageShrinker } from "@/components/admin/useImageShrinker";
 
 /**
  * Logo de la tienda (incremento 17).
@@ -37,6 +38,8 @@ export function LogoForm({
 }) {
   const [uploadState, uploadAction] = useActionState(updateLogoAction, INITIAL);
   const [removeState, removeAction] = useActionState(removeLogoAction, INITIAL);
+  // El servidor lo deja en 512 px; 1024 conserva margen para ese reescalado.
+  const shrinker = useImageShrinker(1024);
 
   return (
     <div className="flex flex-col gap-4 rounded-md border border-line bg-white p-4">
@@ -72,7 +75,7 @@ export function LogoForm({
         </p>
       </div>
 
-      <form action={uploadAction} className="flex flex-col gap-3">
+      <form action={uploadAction} onSubmit={shrinker.guardSubmit} className="flex flex-col gap-3">
         <label className="flex min-h-11 cursor-pointer flex-col justify-center gap-1">
           <span className="text-sm font-medium text-black">
             {logoPublicUrl ? "Sustituir el logo" : "Subir un logo"}
@@ -82,13 +85,23 @@ export function LogoForm({
             name="logo"
             accept="image/jpeg,image/png,image/webp"
             required
+            onChange={shrinker.onChange}
             className="block w-full text-sm text-gray-700 file:mr-3 file:min-h-11 file:rounded-full file:border file:border-line file:bg-cream file:px-4 file:text-sm file:font-medium file:text-black"
           />
         </label>
         <p className="text-xs text-gray-400">
-          JPEG, PNG o WebP, hasta 5 MB. Se convierte a WebP y se reduce a 512 px
-          de lado.
+          JPEG, PNG o WebP. Se convierte a WebP y se reduce a 512 px de lado.
         </p>
+        {shrinker.busy ? (
+          <p role="status" className="text-xs text-gray-700">
+            Preparando la imagen…
+          </p>
+        ) : null}
+        {shrinker.problem ? (
+          <p role="alert" className="text-xs text-red">
+            {shrinker.problem}
+          </p>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-3">
           <SubmitButton label={logoPublicUrl ? "Sustituir logo" : "Subir logo"} />

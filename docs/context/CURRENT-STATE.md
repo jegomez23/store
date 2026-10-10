@@ -8,6 +8,7 @@
 
 **FASE 9.5 — Panel Operativo · Incrementos 1–4, 5A/5B/5C, 6, P2, P3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20 y 21: COMPLETADOS**
 **FASE 10 — CSP/HSTS (DEC-086) hechos · Límites anti-abuso del checkout (DEC-088, migraciones `0046` y `0047`): COMPLETADO**
+**FASE FINAL — Preparación para Vercel (DEC-089, DEC-090): LISTO PARA PREVIEW — sin desplegar todavía** (detalle al final)
 
 Última actualización: 2026-10-10
 
@@ -773,7 +774,7 @@ Lo que **no** existe todavía y no debe confundirse con hecho: crear productos, 
 
 | Tecnología | Versión | Notas |
 |---|---|---|
-| Next.js | **16.3.3** | App Router, Turbopack por defecto, `proxy.ts` en uso desde Fase 7 |
+| Next.js | **16.3.8** (16.3.3 hasta la fase final: parche de seguridad) | App Router, Turbopack por defecto, `proxy.ts` en uso desde Fase 7 |
 | React / React DOM | **19.2.8** | `useActionState` + `useFormStatus` en los formularios del panel |
 | TypeScript | ^5 (strict) | Alias `@/*` → raíz del proyecto |
 | Tailwind CSS | **^4** | Sintaxis `@theme inline` |
@@ -883,7 +884,7 @@ store_ropa/
 
 ### Instaladas
 
-`next@16.3.3`, `react@19.2.8`, `react-dom@19.2.8`, `tailwindcss@^4`, `@tailwindcss/postcss@^4`, `typescript@^5`, `eslint@^9`, `eslint-config-next@16.3.3`, `@supabase/supabase-js@2.112.4`, `@supabase/ssr@0.12.5`, `sharp@0.35.3` (Fase 8, DEC-036), `supabase@2.116.0` (CLI, devDependency), tipos de React/Node.
+`next@16.3.8`, `react@19.2.8`, `react-dom@19.2.8`, `tailwindcss@^4`, `@tailwindcss/postcss@^4`, `typescript@^5`, `eslint@^9`, `eslint-config-next@16.3.8`, `@supabase/supabase-js@2.112.4`, `@supabase/ssr@0.12.5`, `sharp@0.35.5` (Fase 8, DEC-036), `supabase@2.116.0` (CLI, devDependency), tipos de React/Node.
 
 **Fase 9 no añadió ninguna.** La imagen Open Graph usa `next/og`, que viene dentro de Next 16; el placeholder blur lo genera `sharp`, que ya estaba.
 
@@ -905,6 +906,9 @@ Zustand, Framer Motion, shadcn/ui, React Hook Form, Zod. Ver `/docs/rules/fronte
 - [x] Headers de seguridad — **CSP y HSTS hechos en Fase 10** (DEC-086), en `lib/security/headers.ts`. ⬜ Falta cargarlos en un navegador.
 - [x] Límites anti-abuso del checkout — **hechos y verificados** (DEC-088, `0046` + `0047`).
 - [ ] Recorrido manual en navegador real de tienda **y** panel.
+- [ ] **Vercel** (fase final): crear el proyecto, variables de Preview, región de Functions, desplegar Preview y smoke test — `11-ENVIRONMENT.md` §5. Ningún despliegue hecho todavía.
+- [ ] **Supabase de producción**: no existe; el único proyecto (`store`) tiene el seed de desarrollo — `11-ENVIRONMENT.md` §5.3.
+- [ ] Dominio definitivo → `NEXT_PUBLIC_SITE_URL` de Production. Pendiente de Juan.
 - [ ] Assets de marca reales y copy final aprobado — pendiente de Juan.
 - [ ] Regla "promoción más favorable" — pendiente de Juan; bloquea promociones.
 
@@ -1042,3 +1046,31 @@ Bajo un candado por mercado tomado ANTES de la idempotencia (0047), con los lím
 - `npx tsc --noEmit`, `npm run lint` y `npm run build` verdes; mismas formas de ruta (`/` y `/carrito` estáticas con ISR, fichas SSG, `/checkout` dinámica). `types/database.types.ts` regenerado (las dos columnas nuevas).
 - **E2E 15/15** en Chrome 155 headless a 390×844 sobre el build servido: carrito manipulado a 15 → 10 y botón de sumar deshabilitado; la ficha se para en 10; con 11 uds el aviso sale **por encima del primer campo** (201 px frente a 383), el enlace mide 44 px y COMPRAR sigue deshabilitado con todo relleno; con 10 uds el pedido se crea de verdad (6 + 4); **cero errores de consola y cero violaciones de CSP**; sin scroll horizontal.
 - Baseline restaurado: umbrales 3/30, número de WhatsApp del seed, 0 pedidos, 0 clientes, stocks originales.
+
+---
+
+## Fase final — Preparación para producción en Vercel: LISTO PARA PREVIEW
+
+Última actualización: 2026-10-10. **Sin migraciones.** **Nada desplegado**: no hay proyecto de Vercel, ni CLI de Vercel en este entorno, ni proyecto de Supabase de producción.
+
+**Lo que impedía desplegar, y está corregido:**
+
+1. **Next 16.3.3 tenía vulnerabilidades publicadas, una crítica que afecta a esta tienda**: ejecución remota de código en `next/og` `ImageResponse` (GHSA-vcvr-r3jv-pc5j) — la tienda sirve `/opengraph-image` con él —, más SSRF en la optimización de imágenes y envenenamiento de caché SSG/ISR. **Subido a 16.3.8** (parche, misma rama). `sharp` 0.35.3 → 0.35.5 (libheif/librsvg) y `source-map-js` transitivo. `npm audit --omit=dev`: **0**. Quedan 5 avisos «high» solo en el tooling de lint (`braces` dentro de `eslint-config-next`): no se despliegan, y la «solución» de npm sería bajar a `eslint-config-next@14`.
+2. **Las fotos de móvil no habrían subido en Vercel** (DEC-089): Vercel corta en 4,5 MB por petición y el panel mandaba hasta 26 MB. Ahora el navegador las reduce a 2000 px (lo mismo que conserva `sharp`) y el límite local es el de Vercel.
+3. **Un despliegue sin `NEXT_PUBLIC_SITE_URL` publicaba el canonical, el sitemap y el OG en `localhost`** sin que fallara nada, y sin `NEXT_PUBLIC_MARKET` vendía en ES (DEC-090). Ahora el build de Vercel falla con el nombre de lo que falta, y en cualquier entorno si un secreto lleva `NEXT_PUBLIC_`.
+4. **Node 22.x fijado** en `engines` (Vercel usaría otra versión por defecto).
+5. `.env.example` reescrito: obligatoriedad por entorno, `SUPABASE_SERVICE_ROLE_KEY` marcada como **solo tests**, y aclarado que no hay clave de Anthropic (el asistente es Gemini).
+
+**Revisado y sin cambios** (no hacía falta tocarlo): sin escrituras a disco ni procesos persistentes; `proxy.ts` solo en `/admin`; ISR intacto (`/`, `/carrito`, fichas y OG a 5 min); `/checkout`, `/pedido` y el panel con `no-store`; `/pedido/[numero]` no lee la BD; redirecciones del login y de la recuperación saneadas; ningún `console.error` registra email, teléfono ni claves; ningún código de la app lee la service role; `.env.local` y `supabase/.temp` ignorados por git y sin secretos en archivos versionados.
+
+**Supabase:** proyecto enlazado `store` (`eu-central-1`), 47/47 migraciones (`0001`–`0047`) iguales en local y remoto. Es el de **pruebas** (lleva el seed). El de producción hay que crearlo: pasos en `11-ENVIRONMENT.md` §5.3.
+
+**Verificación:**
+
+- `npm test` **1213/1213** con integración · lint, tsc y build verdes sobre Next 16.3.8 · **E2E 14/14** de subidas en Chrome 155 headless a 390×844 sobre el build servido · `npm audit --omit=dev`: 0 vulnerabilidades.
+- Con `VERCEL=1` y la URL de `.env.local` (localhost), `next build` **falla** al cargar la configuración y dice solo `NEXT_PUBLIC_SITE_URL`, sin ningún valor.
+- **E2E 14/14** (admin temporal, borrado al final): lote de 3 fotos de 3,27 MB (9,8 MB) → 0,86 MB cada una, **2,57 MB** en la petición, las 3 entran como WebP; enviar a medio reducir **no manda nada**; alta con una foto de **4,69 MB** → 0,86 MB, producto en borrador con su foto; logo PNG con transparencia de 4,92 MB → 1,90 MB **y sigue siendo PNG**; sin scroll horizontal; cero errores de consola y de CSP.
+- Smoke HTTP sobre el build servido: `/`, ficha y `/carrito` con `s-maxage=300`; `/checkout`, `/pedido` y `/admin/login` con `no-store`; `/admin` → 307 al login; `/opengraph-image` 200; 404 en rutas inexistentes; las seis cabeceras de seguridad presentes; HSTS ausente en http (esperado).
+- Baseline restaurado: 0 pedidos, 0 clientes, 1 perfil, `logo_url` nulo, umbrales 3/30, WhatsApp del seed, Storage sin objetos nuevos.
+
+**NO verificado** (no se puede desde aquí): nada en Vercel — límite real de 4,5 MB, región, cabeceras sobre HTTPS, HSTS en el dominio, logs —; el email de recuperación (necesita SMTP); el asistente de IA con una clave real; Core Web Vitals.

@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import { Feedback, Field, SubmitButton } from "@/components/admin/FormBits";
 import { RemoteImage } from "@/components/ui/RemoteImage";
 import { MAX_FILES_PER_BATCH } from "@/lib/admin/images";
+import { useImageShrinker } from "@/components/admin/useImageShrinker";
 import {
   deleteProductImageAction,
   setImageOrderAction,
@@ -38,10 +39,13 @@ const INITIAL: ImageActionState = { error: null, success: null };
  */
 function UploadForm({ productId }: { productId: string }) {
   const [state, formAction] = useActionState(uploadProductImagesAction, INITIAL);
+  // 2000 px: el mismo lado máximo que aplica `sharp` en el servidor.
+  const shrinker = useImageShrinker(2000);
 
   return (
     <form
       action={formAction}
+      onSubmit={shrinker.guardSubmit}
       className="flex flex-col gap-4 rounded-md border border-line bg-white p-4"
     >
       <input type="hidden" name="productId" value={productId} />
@@ -51,8 +55,9 @@ function UploadForm({ productId }: { productId: string }) {
         <h2 className="text-sm font-medium text-black">Añadir fotos</h2>
         <p className="text-xs text-gray-400">
           Puedes elegir varias a la vez (hasta {MAX_FILES_PER_BATCH}). JPEG, PNG
-          o WebP, máximo 5 MB cada una. Se convierten a WebP y se reescalan a
-          2000 px. El texto alternativo se genera del nombre del producto.
+          o WebP. Las fotos grandes se reducen antes de enviarse; luego se
+          convierten a WebP y se reescalan a 2000 px. El texto alternativo se
+          genera del nombre del producto.
         </p>
       </div>
 
@@ -64,10 +69,23 @@ function UploadForm({ productId }: { productId: string }) {
           multiple
           accept="image/jpeg,image/png,image/webp"
           required
+          onChange={shrinker.onChange}
           // `min-h-11` y el botón grande: objetivo táctil cómodo en móvil.
           className="w-full rounded-md border border-line bg-cream px-3 py-3 text-sm text-black file:mr-3 file:min-h-11 file:rounded-full file:border-0 file:bg-black file:px-4 file:text-sm file:text-white"
         />
       </Field>
+
+      {shrinker.busy ? (
+        // TODO(i18n)
+        <p role="status" className="text-xs text-gray-700">
+          Preparando las fotos…
+        </p>
+      ) : null}
+      {shrinker.problem ? (
+        <p role="alert" className="text-xs text-red">
+          {shrinker.problem}
+        </p>
+      ) : null}
 
       <Feedback state={state} />
 

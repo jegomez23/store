@@ -4,6 +4,16 @@
 
 ---
 
+## Fase final — Preparación para Vercel (2026-10-10)
+
+- **Seguridad de dependencias:** `next` 16.3.3 → **16.3.8** (RCE crítica en `next/og` `ImageResponse`, que usa `/opengraph-image`; SSRF en Image Optimization; envenenamiento de caché ISR), `sharp` → 0.35.5, `source-map-js` transitivo. `npm audit --omit=dev`: 0.
+- **Las fotos se reducen en el navegador** antes de subirlas (DEC-089): Vercel corta en 4,5 MB y el panel mandaba hasta 26 MB, así que una foto de móvil no habría llegado. Mismo formulario y misma Server Action; el servidor sigue validando y re-codificando. El límite local pasa a ser el de Vercel.
+- **El build de Vercel falla si falta el entorno** (DEC-090): `NEXT_PUBLIC_SITE_URL` https, `NEXT_PUBLIC_MARKET` y Supabase; y en cualquier entorno si un secreto lleva `NEXT_PUBLIC_`. Antes, sin la URL, el canonical y el sitemap salían a localhost sin error.
+- **Node 22.x** en `engines`; `.env.example` y `11-ENVIRONMENT.md` §5 con la tabla por entorno, el Supabase de producción y el orden de despliegue.
+- **Verificación:** `npm test` **1213/1213** con integración · lint, tsc y build verdes sobre Next 16.3.8 · **E2E 14/14** de subidas en Chrome 155 headless a 390×844 sobre el build servido · `npm audit --omit=dev`: 0 vulnerabilidades. **Nada desplegado todavía.**
+
+---
+
 ## Fase 10 — Límites anti-abuso del checkout (2026-10-10)
 
 - **`create_order` frena el abuso por dentro** (migración `0046`, DEC-088): máximo **10 unidades por pedido** (`ORDER_TOO_LARGE`; antes cabían 50×99 en una sola llamada y una petición vaciaba el stock), pedidos por **teléfono y hora** (`TOO_MANY_ORDERS`) y por **mercado cada 10 minutos** (`CHECKOUT_BUSY`). Después de la idempotencia, bajo candado por mercado y antes de tocar stock.

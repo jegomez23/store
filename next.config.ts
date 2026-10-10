@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
 import { ACTION_BODY_LIMIT_BYTES } from "./lib/admin/images";
 import { buildSecurityHeaders } from "./lib/security/headers";
+import { assertDeployEnv } from "./lib/security/deploy-env";
+
+// Fase final (DEC-090): en Vercel, sin `NEXT_PUBLIC_SITE_URL`/`_MARKET`/
+// Supabase el build FALLA con el nombre de lo que falta, en vez de publicar un
+// canonical a localhost o vender en el mercado por defecto. Y nunca, en ningún
+// entorno, un secreto con prefijo `NEXT_PUBLIC_`. El mensaje no lleva valores.
+assertDeployEnv(process.env);
 
 // Hostname derivado de NEXT_PUBLIC_SUPABASE_URL (sin hardcodear un
 // project-ref real). Si la variable no está configurada, remotePatterns
@@ -78,6 +85,13 @@ const nextConfig: NextConfig = {
    * El coste es memoria del servidor mientras dura la subida; con un panel de
    * un solo administrador es un intercambio razonable, y es exactamente lo que
    * ya se estaba prometiendo en la interfaz.
+   */
+  /**
+   * Y EL TERCERO, que manda sobre los dos (DEC-089): Vercel corta en 4,5 MB
+   * cualquier petición a una Function con un `413`, antes de llegar a Next. Por
+   * eso `ACTION_BODY_LIMIT_BYTES` vale ahora exactamente ese tope —local se
+   * comporta como producción— y es el NAVEGADOR el que reduce las fotos para
+   * que quepan (`components/admin/useImageShrinker.ts`).
    */
   experimental: {
     serverActions: {

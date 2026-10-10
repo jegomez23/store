@@ -1417,3 +1417,23 @@ La 0046 (`v_units > 10`), `lib/checkout/limits.ts` (`MAX_UNITS_PER_ORDER`) y `li
 ### 30.5 Si cambias la firma de `create_order`
 
 Copia el candado (`3bis`) y el bloque `4bis` enteros a la versión nueva, y apunta `limits.test.ts` a la migración nueva. Una firma nueva sin él reabriría el agujero, y la regla de §20.4 (eliminar la anterior en la misma migración) sigue valiendo.
+
+---
+
+## 31. Despliegue en Vercel (fase final, DEC-089 y DEC-090) — LEER ANTES DE TOCAR SUBIDAS O ENTORNO
+
+### 31.1 El cuerpo de una petición no puede pasar de 4,5 MB
+
+Vercel responde `413` antes de que la petición llegue a Next. `PLATFORM_BODY_LIMIT_BYTES` y `ACTION_BODY_LIMIT_BYTES` valen ese tope **a propósito**, para que `next start` en local falle igual que producción. Si un formulario nuevo manda archivos, usa `useImageShrinker(maxEdge)` y pon `onChange={shrinker.onChange}` en el input y `onSubmit={shrinker.guardSubmit}` en el `<form>`; `images.test.ts` lo exige. **No subas el límite para "arreglar" una subida**: en Vercel no sirve de nada.
+
+### 31.2 Reducir es transporte, no validación
+
+El servidor sigue haciendo lo de siempre (magic bytes, 5 MB, `sharp` → WebP). No relajes `checkImageUpload` porque «el navegador ya reduce»: una Server Action es un POST público.
+
+### 31.3 Las variables públicas se congelan al construir
+
+`lib/security/deploy-env.ts` hace fallar el build de Vercel si falta `NEXT_PUBLIC_SITE_URL`/`_MARKET`/Supabase. Si añades una variable `NEXT_PUBLIC_*` imprescindible en producción, añádela ahí y a la tabla de `11-ENVIRONMENT.md` §5.2. Si añades un secreto, **sin** prefijo; la comprobación falla si su nombre lleva `SECRET`, `API_KEY`, `SERVICE_ROLE`, `TOKEN`… con `NEXT_PUBLIC_`. El mensaje de error **nunca** lleva valores.
+
+### 31.4 Lo que no se hace sin Juan
+
+Promover a producción, conectar un dominio, cambiar DNS, ejecutar migraciones o seeds en el Supabase de producción. Preview sí, con el proyecto de pruebas.

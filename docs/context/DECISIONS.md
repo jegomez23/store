@@ -1892,3 +1892,48 @@ Los cuentan bajo `pg_advisory_xact_lock` por mercado: sin el candado, peticiones
 - Las suites de integración que crean pedidos relajan los umbrales en `before` y los restauran en `after` (`checkout-limits.helper.ts`), porque crean decenas de pedidos con el mismo teléfono en segundos.
 
 **Future reconsideration:** si en producción aparecen ataques sostenidos que cierren la tienda, pasar a (c).
+
+---
+
+## DEC-089 — Las fotos se reducen en el navegador para caber en los 4,5 MB de Vercel
+
+**Status:** Accepted *(fase final, preparación para Vercel, 2026-10-10)*
+
+**Context:** Vercel no deja pasar a una Function un cuerpo de más de **4,5 MB**: responde `413 FUNCTION_PAYLOAD_TOO_LARGE` antes de que la petición llegue a Next (<https://vercel.com/docs/functions/limitations>, «Request body size», consultado el 2026-10-10). Pero el panel estaba preparado para 26 MB: los incrementos 7 y 17 subieron `bodySizeLimit` y `proxyClientMaxBodySize` para que cupiera un lote de 5 × 5 MB, y en local funcionaba. En Vercel, **una sola foto de móvil de 4,84 MB —la medida en el incremento 17— no habría llegado al servidor**, y el administrador habría visto un error genérico. Afecta a los tres controles de archivo: fotos del producto, alta con foto (y «Analizar foto») y logo.
+
+**Decision:**
+- El navegador reduce cada foto a un máximo de **2000 px** (1024 en el logo) en JPEG —un PNG se intenta antes como PNG para no perder la transparencia— **solo si no cabe ya** en su parte del presupuesto (`UPLOAD_REQUEST_BUDGET_BYTES` = 4 000 000 entre las fotos de una petición). La foto reducida se vuelve a meter en el propio `<input>` con `DataTransfer`, así que el formulario y la Server Action **no cambian**. Mientras se prepara, `guardSubmit` cancela el envío (en React 19 un `preventDefault` en `onSubmit` cancela la action). Vive en `components/admin/useImageShrinker.ts`.
+- `ACTION_BODY_LIMIT_BYTES` pasa a valer **exactamente el tope de Vercel** (`PLATFORM_BODY_LIMIT_BYTES` = 4 500 000): `next start` en local rechaza lo mismo que producción.
+
+**Alternatives:**
+- (a) **Subida directa del navegador a Supabase Storage con URL firmada**, y el servidor valida y reprocesa después: aguanta cualquier tamaño, pero añade un área de staging, objetos huérfanos que limpiar y un segundo viaje por foto. Más piezas para el mismo resultado con fotos de móvil.
+- (b) **Una petición por foto sin reducir**: sigue fallando con cualquier foto de más de 4,5 MB.
+- (c) **Dejarlo y avisar «máximo 4 MB»**: obliga al administrador a reducir las fotos a mano en el móvil.
+
+**Reason:** 2000 px es exactamente lo que conserva `sharp` después, así que reducir antes no pierde nada que se fuera a guardar; cero dependencias; el servidor sigue siendo la autoridad (magic bytes, tamaño, re-codificación a WebP). Reducir es transporte, no validación: un cliente que se salte el paso choca con el 413.
+
+**Consequences:**
+- Un test recorre `app/` y `components/` y falla si un `<input type="file">` no usa `useImageShrinker` y `guardSubmit`.
+- Un formato que el navegador no sepa abrir (HEIC en un navegador sin soporte) se manda tal cual si cabe, y si no cabe se dice y no se envía.
+- La foto que ya cabía se manda **intacta**, con su EXIF; la reducida pierde el EXIF pero ya va girada (el navegador aplica la orientación al dibujarla).
+
+**Future reconsideration:** si se necesitan originales de más de 2000 px, o vídeo, pasar a (a).
+
+---
+
+## DEC-090 — En Vercel el build falla si el entorno está incompleto
+
+**Status:** Accepted *(fase final, preparación para Vercel, 2026-10-10)*
+
+**Context:** las `NEXT_PUBLIC_*` se escriben en el código al construir, y varias tienen un respaldo de desarrollo que en producción falla **en silencio**: sin `NEXT_PUBLIC_SITE_URL`, el canonical, el sitemap, `robots.txt` y el Open Graph apuntan a `http://localhost:3000`, la cookie de sesión del panel sale sin `Secure` y no hay HSTS — el build pasa y la web se ve bien —; sin `NEXT_PUBLIC_MARKET` el despliegue vende en ES aunque sea el proyecto de Colombia.
+
+**Decision:** `lib/security/deploy-env.ts` (módulo puro con tests), llamado desde `next.config.ts`:
+- **Con `VERCEL=1`** exige `NEXT_PUBLIC_SUPABASE_URL` https, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SITE_URL` https y no local, y `NEXT_PUBLIC_MARKET` ∈ {ES, CO}. Falla con **todos** los problemas juntos y dónde se arreglan.
+- **Siempre**, también en local: falla si una variable con pinta de secreto (`SERVICE_ROLE`, `SECRET`, `API_KEY`, `GEMINI`…) lleva `NEXT_PUBLIC_`, que la copiaría al JavaScript del navegador. Las `NEXT_PUBLIC_VERCEL_*` de la plataforma no cuentan.
+- El mensaje **nunca** lleva valores, solo nombres (hay test).
+
+**Alternatives:** (a) derivar la URL de `VERCEL_URL` cuando falte: en Preview daría una URL distinta en cada despliegue y en Production escondería que falta el dominio; (b) avisar sin fallar: un aviso en el log de build no lo lee nadie.
+
+**Reason:** un fallo ruidoso al desplegar es barato; un canonical a localhost indexado, o vender en el mercado equivocado, no.
+
+**Consequences:** en local y en CI no cambia nada (no hay `VERCEL`). El primer Preview falla si no se han configurado las cuatro variables, y el log dice cuáles.

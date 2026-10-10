@@ -15,6 +15,7 @@ import {
 } from "@/app/admin/(panel)/catalogo/actions";
 import { analyzeProductPhotoAction } from "@/app/admin/(panel)/catalogo/nuevo/ai-actions";
 import { ASSIST_IDLE, type AssistState } from "@/lib/ai/assist-state";
+import { useImageShrinker } from "@/components/admin/useImageShrinker";
 
 /**
  * Crear producto: la foto primero (incremento 20).
@@ -158,6 +159,8 @@ export function NewProductFlow({
   const [photoName, setPhotoName] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const previewUrl = useRef<string | null>(null);
+  // 2000 px: el mismo lado máximo que aplica `sharp` en el servidor.
+  const shrinker = useImageShrinker(2000);
 
   const [values, setValues] = useState<Record<FieldName, string>>({
     name: "",
@@ -205,6 +208,7 @@ export function NewProductFlow({
   };
 
   function onPickPhoto(event: React.ChangeEvent<HTMLInputElement>) {
+    shrinker.onChange(event);
     const file = event.target.files?.[0] ?? null;
     setPhotoName(file?.name ?? null);
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current);
@@ -219,7 +223,7 @@ export function NewProductFlow({
       : FIELDS.filter((field) => !suggestion.origin[ORIGIN_KEY[field]]);
 
   return (
-    <form action={saveAction} className="flex flex-col gap-6">
+    <form action={saveAction} onSubmit={shrinker.guardSubmit} className="flex flex-col gap-6">
       {/* ─────────────────────────── 1. LA FOTO ─────────────────────────── */}
       <div className="flex flex-col gap-3">
         <label className="flex min-h-44 cursor-pointer flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed border-line bg-cream px-4 py-6 text-center">
@@ -252,6 +256,17 @@ export function NewProductFlow({
         </label>
 
         {photoName ? <p className="truncate text-xs text-gray-700">{photoName}</p> : null}
+        {shrinker.busy ? (
+          // TODO(i18n)
+          <p role="status" className="text-xs text-gray-700">
+            Preparando la foto…
+          </p>
+        ) : null}
+        {shrinker.problem ? (
+          <p role="alert" className="text-xs text-red">
+            {shrinker.problem}
+          </p>
+        ) : null}
 
         <div className="flex flex-col gap-2">
           <AnalyzeButton

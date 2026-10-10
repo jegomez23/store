@@ -189,9 +189,10 @@
 
 ---
 
-## FASE 11 — Deploy Producción ⬜ PENDIENTE
+## FASE 11 — Deploy Producción 🟨 REPOSITORIO LISTO PARA PREVIEW, NADA DESPLEGADO
 
 **Objetivo:** tienda pública real.
+**Hecho (2026-10-10, DEC-089/090):** parche de seguridad de Next (16.3.8), subidas que caben en los 4,5 MB de Vercel, build que falla sin el entorno de producción, Node 22.x fijado, guía en `11-ENVIRONMENT.md` §5. **Falta:** proyecto de Vercel, Preview verificado, Supabase de producción, dominio.
 **Tareas:** proyectos Vercel por mercado · dominios + DNS · envs de producción · proyecto Supabase prod + migraciones · smoke tests post-deploy · monitoreo básico (logs Vercel; analytics opcional — decisión Juan).
 **Dependencias:** Fases 9–10. Decisión humana: dominios definitivos.
 **Entregable:** URL pública vendiendo.

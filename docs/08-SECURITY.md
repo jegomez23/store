@@ -324,3 +324,14 @@ worker-src 'self' blob:
 - ✅ **Sin regresión** de las cuatro cabeceras de Fase 9: las seis viajan juntas, también en el 307 de `/admin` hacia el login.
 - ✅ **1140/1140 tests** (`npm test`), integración incluida, contra el proyecto real.
 - ✅ **`robots.txt`** mantiene los cinco `Disallow` sobre el build servido.
+
+---
+
+## 11. Preparación para producción (fase final, 2026-10-10)
+
+- **Dependencias:** `next` 16.3.3 tenía una ejecución remota de código en `next/og` `ImageResponse` (GHSA-vcvr-r3jv-pc5j), que esta tienda usa en `/opengraph-image`, además de SSRF en Image Optimization y envenenamiento de caché SSG/ISR. Subido a **16.3.8**; `sharp` a 0.35.5. `npm audit --omit=dev` → 0. **Antes de cada despliegue a producción, `npm audit --omit=dev`.** Los avisos que quedan son del tooling de lint y no se despliegan.
+- **Secretos en el bundle:** el build falla, en cualquier entorno, si una variable con nombre de secreto lleva `NEXT_PUBLIC_` (DEC-090). Un test comprueba además que ningún código lee una variable así.
+- **`SUPABASE_SERVICE_ROLE_KEY` no existe para la aplicación**: solo la usan los tests de integración desde `.env.local`. No se configura en Vercel.
+- **Subidas:** el navegador reduce las fotos para caber en los 4,5 MB de Vercel (DEC-089); la validación sigue en el servidor y no se ha relajado.
+- **Vercel Toolbar:** en Preview la CSP bloquea su script (`vercel.live`). Se desactiva la Toolbar; **no se amplía la CSP**.
+- ⚠️ **No verificado en Vercel:** cabeceras sobre HTTPS, HSTS en el dominio real, límite de 4,5 MB real, logs. Pasos en `11-ENVIRONMENT.md` §5.4.
