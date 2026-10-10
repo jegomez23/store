@@ -1,6 +1,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { relaxCheckoutLimits } from "../../checkout/__tests__/checkout-limits.helper.ts";
 import { orderSearchTokens, sanitizeOrderSearch } from "../orders.ts";
 
 /**
@@ -52,6 +53,16 @@ function readEnv(): Env | null {
 
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
+
+// Esta suite crea pedidos más deprisa de lo que la 0046 deja a un cliente real:
+// se relajan los umbrales y se restauran al terminar (DEC-088).
+let restoreCheckoutLimits: (() => Promise<void>) | null = null;
+before(async () => {
+  if (env) restoreCheckoutLimits = await relaxCheckoutLimits(env);
+});
+after(async () => {
+  await restoreCheckoutLimits?.();
+});
 
 /**
  * Un método de entrega ACTIVO del mercado, resuelto en tiempo real.

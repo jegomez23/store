@@ -21,6 +21,7 @@ import {
   type ShippingMethodOption,
 } from "@/lib/checkout/shipping";
 import { CHECKOUT_RESULT_STORAGE_KEY } from "@/lib/checkout/storage-key";
+import { MAX_UNITS_PER_ORDER } from "@/lib/checkout/limits";
 import {
   ATTRIBUTION_STORAGE_KEY,
   sanitizeAttribution,
@@ -89,6 +90,13 @@ export function CheckoutForm({
    */
   const requestIdRef = useRef<string | null>(null);
 
+  /*
+    Tope de unidades por pedido (DEC-088). Cada línea del carrito ya está
+    limitada a ese número, pero varias líneas pueden sumarlo. Se avisa ANTES de
+    que el cliente rellene nada; `create_order` lo rechazaría igualmente.
+  */
+  const tooManyUnits = totals.totalUnits > MAX_UNITS_PER_ORDER;
+
   const nameValid = isValidName(name);
   const phoneValid = isValidPhone(phone);
 
@@ -143,6 +151,8 @@ export function CheckoutForm({
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setServerError(null);
+
+    if (tooManyUnits) return;
 
     if (!nameValid || !phoneValid || shippingMethodId === null) {
       setShowValidation(true);
@@ -200,6 +210,19 @@ export function CheckoutForm({
   return (
     <div className="flex flex-col gap-8 md:grid md:grid-cols-[1fr_20rem] md:items-start md:gap-10">
       <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-6">
+        {tooManyUnits ? (
+          <div role="alert" className="flex flex-col items-start gap-3 rounded-md border border-line bg-cream p-4">
+            <p className="text-sm text-black">
+              {/* TODO(i18n) */}
+              Un pedido admite como máximo {MAX_UNITS_PER_ORDER} unidades y tu
+              carrito tiene {totals.totalUnits}.
+            </p>
+            <Link href="/carrito" className="inline-flex min-h-11 items-center text-sm font-medium text-black underline">
+              Ajustar el carrito
+            </Link>
+          </div>
+        ) : null}
+
         <div className="flex flex-col gap-2">
           <label htmlFor={nameId} className="text-sm font-medium text-black">
             Nombre
@@ -335,7 +358,7 @@ export function CheckoutForm({
           <Button
             type="submit"
             variant="whatsapp"
-            disabled={isPending || shippingMethodId === null}
+            disabled={isPending || shippingMethodId === null || tooManyUnits}
             aria-describedby={errorId}
             className="w-full"
           >

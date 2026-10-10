@@ -168,10 +168,16 @@ Verificado contra la instancia real (40 tests de integración con la anon key):
 precio manipulado → se guarda el precio real; `anon` no puede leer ni insertar
 directamente en `orders`/`order_items`/`order_events`/`customers`.
 
-**Riesgo residual aceptado:** al ser un endpoint público sin autenticación,
-alguien puede crear pedidos basura que consuman stock. Es inherente a un
-checkout sin login; la mitigación (rate limiting / bot protection) corresponde
-a Fase 10.
+**Riesgo residual, ACOTADO desde la 0046 (DEC-088):** al ser un endpoint
+público sin autenticación, alguien puede crear pedidos basura que retengan stock.
+`create_order` aplica tres límites, todos dentro de PostgreSQL —un limitador en
+Next se lo salta quien llama a PostgREST directo—: **máx. 10 unidades por
+pedido** (`ORDER_TOO_LARGE`; antes cabían 50×99 en una sola llamada), **pedidos
+por teléfono y hora** (`TOO_MANY_ORDERS`) y **pedidos por mercado cada 10
+minutos** (`CHECKOUT_BUSY`), contados bajo un candado por mercado. Lo que NO
+resuelve: un script que invente teléfonos solo lo frena el límite global, que
+durante un ataque sostenido también frena a los clientes legítimos. El siguiente
+escalón documentado es un secreto servidor→BD + IP real.
 
 ### Tablas 100% privadas
 

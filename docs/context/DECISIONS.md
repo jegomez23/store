@@ -1857,3 +1857,38 @@ La IA **no entra en el estado de venta**: apagarla no impide vender, y `SALE_CHE
 **Verificado en Chrome 153 a 390×844 sobre el build servido:** apagada → botón desactivado, «La ayuda con IA está desactivada. Puedes activarla en Ajustes» y enlace a la sección; encendida sin clave → mensaje distinto («no está configurado»); y **el guardia del servidor**: quitando el `disabled` desde la consola y pulsando, la action responde que está desactivada, **no se rellena ningún campo y no sale ni una petición externa del navegador**. La columna nueva da **401** a `anon`, como exige la 0041.
 
 ⬜ **Sigue sin verificarse la calidad de una sugerencia real**: este entorno no tiene `GEMINI_API_KEY`. Lo que está probado es la forma de la petición, la lectura de todas las formas conocidas de respuesta y el camino completo sin asistente.
+
+---
+
+## DEC-088 — El abuso del checkout se frena dentro de `create_order`, no en Next
+
+**Status:** Accepted *(Fase 10, migraciones 0046 y 0047, 2026-10-10 — enfoque y tope de unidades decididos por Juan)*
+
+**Context:** riesgo residual de DEC-026, medido en el código. `create_order` tiene `grant execute` a `anon` y la anon key es pública (`NEXT_PUBLIC_`): cualquiera la llama por POST a `/rest/v1/rpc/create_order` sin pasar por la tienda. Admitía **50 líneas × 99 unidades**, así que **una sola llamada podía vaciar el stock del catálogo**, y cada pedido basura obligaba a cancelarlo a mano para recuperarlo.
+
+**Decision:** tres límites dentro de `create_order` (0046), DESPUÉS de la idempotencia y ANTES de descontar stock:
+
+| Código | Regla | Dónde vive el umbral |
+|---|---|---|
+| `ORDER_TOO_LARGE` | máx. **10 unidades** por pedido, sumando líneas | **Constante** en la 0046, `lib/checkout/limits.ts` y el tope por línea del carrito; `limits.test.ts` vigila los tres |
+| `TOO_MANY_ORDERS` | pedidos del mismo teléfono en 1 hora | `settings.checkout_max_orders_per_phone_hour` (default **3**) |
+| `CHECKOUT_BUSY` | pedidos del mercado en 10 minutos | `settings.checkout_max_orders_per_market_10min` (default **30**) |
+
+Los cuentan bajo `pg_advisory_xact_lock` por mercado: sin el candado, peticiones paralelas cuentan a la vez y entran todas — que es justo el ataque (hay test de integración: 10 simultáneas con hueco para 3 → entran 3). **El candado se toma ANTES de la idempotencia (0047)**: la 0046 lo tomaba después, y dos envíos simultáneos con la misma clave chocaban con el índice único (`23505`, medido 2 de 3); ahora el segundo espera, ve el pedido del primero y lo devuelve con `reused: true`. Los umbrales configurables nacen **privados** (0041) y tienen CHECK `>= 1`.
+
+**Alternatives:**
+- (a) **Limitador en la Server Action**: se lo salta cualquiera que llame a PostgREST directo; en memoria, además, no se coordina entre instancias.
+- (b) **Contar por IP en la BD**: el checkout legítimo pasa por el servidor de Next, así que todos los clientes llegarían con la misma IP y se frenarían entre sí.
+- (c) **Secreto servidor→BD + IP real** (anon directo fuera; el servidor pasa la IP del cliente): más fuerte, pero exige un secreto por entorno en Vault, cambiar ~40 tests de integración y un paso más de despliegue. **Queda como siguiente escalón** si el freno global resulta insuficiente en producción.
+- (d) **Bot protection de la plataforma**: depende de dónde se despliegue (Fase 11) y es una dependencia.
+
+**Reason:** es lo único que se aplica por TODOS los caminos sin confiar en nada del cliente, sin secretos y sin dependencias.
+
+**Consequences:**
+- **Lo que NO hace, dicho claro:** el límite por teléfono no frena a un script que invente teléfonos. El que lo acota es el freno global: el daño máximo por ventana pasa a ser «umbral × 10 unidades», y al parar el ataque la tienda vuelve a vender sola. **El precio:** durante un ataque sostenido tampoco compran los clientes legítimos — sin el freno tampoco podrían (stock vacío) y habría que cancelar cada pedido a mano.
+- El carrito limita cada línea a 10 y el checkout avisa **antes de rellenar nada** si varias líneas suman más; los mensajes no hablan de abuso.
+- Un reintento idempotente **nunca** se rechaza: no es un pedido nuevo.
+- En campañas grandes, Juan sube `checkout_max_orders_per_market_10min` por SQL sin desplegar. No hay pantalla para ello (un solo administrador; no se añade UI sin necesidad).
+- Las suites de integración que crean pedidos relajan los umbrales en `before` y los restauran en `after` (`checkout-limits.helper.ts`), porque crean decenas de pedidos con el mismo teléfono en segundos.
+
+**Future reconsideration:** si en producción aparecen ataques sostenidos que cierren la tienda, pasar a (c).

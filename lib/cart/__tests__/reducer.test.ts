@@ -104,8 +104,8 @@ describe("ADD_ITEM", () => {
 
   test("no supera el tope duro por línea", () => {
     const state = stateWith(
-      makeItem({ quantity: 90, stockSnapshot: null }),
-      makeItem({ quantity: 50, stockSnapshot: null }),
+      makeItem({ quantity: 8, stockSnapshot: null }),
+      makeItem({ quantity: 5, stockSnapshot: null }),
     );
     assert.equal(state.lines[0].quantity, MAX_QUANTITY_PER_LINE);
   });
@@ -211,7 +211,7 @@ describe("UPDATE_QUANTITY", () => {
     const state = cartReducer(stateWith(makeItem({ stockSnapshot: 5 })), {
       type: "UPDATE_QUANTITY",
       variantId: "var-1",
-      quantity: 20,
+      quantity: 8,
     });
     assert.equal(state.lines[0].quantity, 5);
   });

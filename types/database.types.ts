@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.5"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -876,6 +876,8 @@ export type Database = {
       settings: {
         Row: {
           ai_assist_enabled: boolean
+          checkout_max_orders_per_market_10min: number
+          checkout_max_orders_per_phone_hour: number
           contact_email: string | null
           facebook_url: string | null
           instagram_url: string | null
@@ -890,6 +892,8 @@ export type Database = {
         }
         Insert: {
           ai_assist_enabled?: boolean
+          checkout_max_orders_per_market_10min?: number
+          checkout_max_orders_per_phone_hour?: number
           contact_email?: string | null
           facebook_url?: string | null
           instagram_url?: string | null
@@ -904,6 +908,8 @@ export type Database = {
         }
         Update: {
           ai_assist_enabled?: boolean
+          checkout_max_orders_per_market_10min?: number
+          checkout_max_orders_per_phone_hour?: number
           contact_email?: string | null
           facebook_url?: string | null
           instagram_url?: string | null

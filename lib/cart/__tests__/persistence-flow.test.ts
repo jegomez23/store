@@ -255,10 +255,10 @@ describe("recuperación tras manipulación del storage", () => {
       JSON.stringify({
         version: 1,
         marketId: MARKET,
-        lines: [{ ...chaqueta, quantity: 99999, stockSnapshot: 12 }],
+        lines: [{ ...chaqueta, quantity: 99999, stockSnapshot: 7 }],
       }),
     );
-    assert.equal(reload().state.lines[0].quantity, 12);
+    assert.equal(reload().state.lines[0].quantity, 7);
   });
 
   test("líneas basura se descartan y las válidas sobreviven", () => {

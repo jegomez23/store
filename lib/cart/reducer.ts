@@ -23,8 +23,13 @@ import type {
  * ejecutarse directamente bajo `node --test` sin bundler ni alias.
  */
 
-/** Tope duro por línea. Evita cantidades absurdas aunque el stock lo permita. */
-export const MAX_QUANTITY_PER_LINE = 99;
+/**
+ * Tope duro por línea. Es el máximo de unidades que admite UN PEDIDO
+ * (`MAX_UNITS_PER_ORDER`, DEC-088): ofrecer más sería dejar elegir algo que el
+ * checkout va a rechazar. El carrito no puede importar del checkout, así que el
+ * número se repite y `lib/checkout/__tests__/limits.test.ts` vigila que coincida.
+ */
+export const MAX_QUANTITY_PER_LINE = 10;
 
 export const EMPTY_CART: CartState = { lines: [], status: "pending" };
 

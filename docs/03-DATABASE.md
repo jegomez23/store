@@ -357,6 +357,8 @@ Dos barreras propias sobre el patrón de `order_events`:
 | contact_email | text CHECK (NULL o forma de email, ≤ 254) | CHECK de la `0042` |
 | instagram_url / tiktok_url / facebook_url | text CHECK (NULL o `https://…`, ≤ 300) | CHECK de la `0042`. **Solo https**: el valor acaba en un `href` del footer de todas las páginas, y con `javascript:` permitido el panel podía escribir un enlace ejecutable |
 | policies | jsonb NOT NULL DEFAULT '{}' | `{shipping, returns, privacy}` estructurados |
+| checkout_max_orders_per_phone_hour | int NOT NULL DEFAULT 3 CHECK (>= 1) | **Migración `0046`, DEC-088.** Pedidos que un teléfono puede crear en 1 hora; el siguiente es `TOO_MANY_ORDERS`. **Privada** |
+| checkout_max_orders_per_market_10min | int NOT NULL DEFAULT 30 CHECK (>= 1) | **Migración `0046`, DEC-088.** Pedidos que el mercado acepta en 10 minutos; el siguiente es `CHECKOUT_BUSY`. Subirlo en campañas grandes. **Privada** |
 | updated_at | timestamptz | **NO concedida a `anon`** (migración 0041) |
 
 **Lectura pública por COLUMNA (Incremento 15, migración `0041`).** RLS decide qué

@@ -1387,3 +1387,33 @@ Sin `ANTHROPIC_API_KEY`, `isConfigured()` es `false`, el botón sale desactivado
 ### 29.8 Qué NO hay, y es deliberado
 
 Ni chatbot, ni asistente conversacional, ni ventana flotante, ni agente autónomo. Ni columnas `ai_*`, ni tabla de prompts, ni historial de sugerencias. Ni un «AI SDK» genérico: hay **un** puerto (`ProductAssistant`) con dos métodos, y existe porque cambiar de proveedor no debe tocar la pantalla.
+
+---
+
+## 30. Límites anti-abuso del checkout (Fase 10, migración 0046, DEC-088) — LEER ANTES DE TOCARLOS
+
+### 30.1 Viven en PostgreSQL porque es el único sitio por el que pasa todo
+
+`create_order` se puede llamar por POST directo con la anon key, que es pública. Un limitador en la Server Action, en `proxy.ts` o en memoria **no frena nada**: el atacante no pasa por ahí. **No muevas los límites a TypeScript.** `validation.ts` repite el tope de unidades solo para dar el error antes y barato.
+
+**No cuentes por IP** (ni `request.headers`, ni `x-forwarded-for`, ni `inet_client_addr`): el checkout legítimo llega desde el servidor de Next y todos los clientes compartirían IP. Hay un test que lo impide.
+
+### 30.2 El orden es parte de la garantía
+
+1. **Candado `pg_advisory_xact_lock` por mercado, ANTES de leer la clave de idempotencia** (0047). Sin él, mil peticiones paralelas cuentan «29» a la vez y entran todas. Y tiene que ir antes de la idempotencia: en la 0046 iba después, y un doble envío simultáneo con la misma clave pasaba la comprobación, esperaba y chocaba con el índice único (`23505`, medido 2 de 3).
+2. **Límites después de la idempotencia**: un reintento devuelve su pedido aunque el teléfono o el mercado estén al límite.
+3. **Antes de descontar stock**: un rechazo no se lleva ninguna unidad.
+
+`limits.test.ts` lee la 0047 (versión vigente de la función) y falla si cambia este orden.
+
+### 30.3 El tope de unidades está en TRES sitios, y se cambian juntos
+
+La 0046 (`v_units > 10`), `lib/checkout/limits.ts` (`MAX_UNITS_PER_ORDER`) y `lib/cart/reducer.ts` (`MAX_QUANTITY_PER_LINE`, que **no puede** importar del checkout). Es una decisión comercial de Juan, no un ajuste: por eso es constante y no columna.
+
+### 30.4 Los otros dos umbrales son columnas de `settings`
+
+`checkout_max_orders_per_phone_hour` (3) y `checkout_max_orders_per_market_10min` (30). Privadas por la 0041, CHECK `>= 1`. Sin fila de `settings`, la función usa los mismos valores por defecto. **Si añades una suite de integración que cree pedidos, llama a `relaxCheckoutLimits` en su `before` y restaura en su `after`** (`lib/checkout/__tests__/checkout-limits.helper.ts`), o chocará con 3 pedidos por teléfono.
+
+### 30.5 Si cambias la firma de `create_order`
+
+Copia el candado (`3bis`) y el bloque `4bis` enteros a la versión nueva, y apunta `limits.test.ts` a la migración nueva. Una firma nueva sin él reabriría el agujero, y la regla de §20.4 (eliminar la anterior en la misma migración) sigue valiendo.

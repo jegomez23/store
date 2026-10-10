@@ -1,5 +1,6 @@
 import { sanitizeAttribution } from "../attribution/attribution.ts";
 import type { CheckoutErrorCode } from "./errors.ts";
+import { MAX_UNITS_PER_ORDER, totalUnits } from "./limits.ts";
 import type { CheckoutInput, CheckoutLineRef } from "./types.ts";
 
 /**
@@ -17,7 +18,10 @@ import type { CheckoutInput, CheckoutLineRef } from "./types.ts";
  * Solo imports `import type`: ejecutable bajo `node --test` sin bundler.
  */
 
-/** Debe coincidir con el tope por línea del carrito (`MAX_QUANTITY_PER_LINE`). */
+/**
+ * Tope ESTRUCTURAL por línea, el mismo que aplica `create_order`. El límite que
+ * de verdad manda es el de unidades por pedido (`MAX_UNITS_PER_ORDER`, 0046).
+ */
 export const MAX_QUANTITY_PER_LINE = 99;
 /** Tope de líneas por pedido; el mismo que aplica `create_order`. */
 export const MAX_LINES_PER_ORDER = 50;
@@ -115,6 +119,11 @@ export function validateCheckoutInput(value: unknown): ValidationResult {
     seen.add(variantId);
 
     items.push({ variantId, quantity: line.quantity });
+  }
+
+  // Primera barrera del tope de unidades (DEC-088); la autoridad es la 0046.
+  if (totalUnits(items) > MAX_UNITS_PER_ORDER) {
+    return { ok: false, error: "ORDER_TOO_LARGE" };
   }
 
   const customerRaw = raw.customer;

@@ -1,3 +1,5 @@
+import { MAX_UNITS_PER_ORDER } from "./limits.ts";
+
 /**
  * Errores de dominio del checkout (Fase 6).
  *
@@ -33,6 +35,12 @@ export const CHECKOUT_ERROR_CODES = [
   "SHIPPING_METHOD_REQUIRED",
   /** El método no existe, está retirado o es de otro mercado (incremento 8). */
   "INVALID_SHIPPING_METHOD",
+  /** Más unidades de las que admite un pedido (0046, DEC-088). */
+  "ORDER_TOO_LARGE",
+  /** Ese teléfono ya ha hecho demasiados pedidos en la última hora (0046). */
+  "TOO_MANY_ORDERS",
+  /** El mercado ha recibido demasiados pedidos en 10 minutos (0046). */
+  "CHECKOUT_BUSY",
   /** Misma clave de idempotencia con un payload distinto. */
   "IDEMPOTENCY_KEY_REUSED",
   /** El mercado no tiene número de WhatsApp configurado. */
@@ -67,6 +75,10 @@ const MESSAGES: Record<CheckoutErrorCode, string> = {
   SHIPPING_METHOD_REQUIRED: "Elige cómo quieres recibir el pedido.",
   INVALID_SHIPPING_METHOD:
     "Esa forma de entrega ya no está disponible. Vuelve a elegir una.",
+  ORDER_TOO_LARGE: `Un pedido admite como máximo ${MAX_UNITS_PER_ORDER} unidades. Ajusta las cantidades en el carrito.`,
+  TOO_MANY_ORDERS:
+    "Ya hemos recibido varios pedidos con este teléfono hace poco. Espera un rato antes de hacer otro.",
+  CHECKOUT_BUSY: "Estamos recibiendo muchos pedidos ahora mismo. Inténtalo de nuevo en unos minutos.",
   IDEMPOTENCY_KEY_REUSED: "Este pedido ya se había enviado. Vuelve al carrito y empieza de nuevo.",
   CHECKOUT_NOT_CONFIGURED: "La compra por WhatsApp no está disponible ahora mismo.",
   ORDER_CREATION_FAILED: "No hemos podido registrar tu pedido. Inténtalo de nuevo en unos segundos.",

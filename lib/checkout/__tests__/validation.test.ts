@@ -9,6 +9,7 @@ import {
   isValidQuantity,
   validateCheckoutInput,
 } from "../validation.ts";
+import { MAX_UNITS_PER_ORDER } from "../limits.ts";
 
 /**
  * Validación del payload del checkout (Fase 6).
@@ -75,11 +76,37 @@ describe("payload válido", () => {
     assert.deepEqual(a.input.items, b.input.items);
   });
 
-  test("acepta la cantidad máxima por línea", () => {
+  test("acepta exactamente el máximo de unidades por pedido (DEC-088)", () => {
     const result = validateCheckoutInput(
-      payload({ items: [{ variantId: VARIANT_A, quantity: MAX_QUANTITY_PER_LINE }] }),
+      payload({ items: [{ variantId: VARIANT_A, quantity: MAX_UNITS_PER_ORDER }] }),
     );
     assert.equal(result.ok, true);
+  });
+
+  test("una línea por encima del máximo de unidades -> ORDER_TOO_LARGE", () => {
+    const result = validateCheckoutInput(
+      payload({ items: [{ variantId: VARIANT_A, quantity: MAX_UNITS_PER_ORDER + 1 }] }),
+    );
+    assert.deepEqual(result, { ok: false, error: "ORDER_TOO_LARGE" });
+  });
+
+  test("varias líneas que SUMAN más del máximo -> ORDER_TOO_LARGE", () => {
+    const result = validateCheckoutInput(
+      payload({
+        items: [
+          { variantId: VARIANT_A, quantity: 6 },
+          { variantId: VARIANT_B, quantity: 5 },
+        ],
+      }),
+    );
+    assert.deepEqual(result, { ok: false, error: "ORDER_TOO_LARGE" });
+  });
+
+  test("el tope estructural por línea sigue dando INVALID_INPUT, no ORDER_TOO_LARGE", () => {
+    const result = validateCheckoutInput(
+      payload({ items: [{ variantId: VARIANT_A, quantity: MAX_QUANTITY_PER_LINE + 1 }] }),
+    );
+    assert.deepEqual(result, { ok: false, error: "INVALID_INPUT" });
   });
 
   test("sourceUrl es opcional y se recorta a 500 caracteres", () => {

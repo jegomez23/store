@@ -4,6 +4,16 @@
 
 ---
 
+## Fase 10 — Límites anti-abuso del checkout (2026-10-10)
+
+- **`create_order` frena el abuso por dentro** (migración `0046`, DEC-088): máximo **10 unidades por pedido** (`ORDER_TOO_LARGE`; antes cabían 50×99 en una sola llamada y una petición vaciaba el stock), pedidos por **teléfono y hora** (`TOO_MANY_ORDERS`) y por **mercado cada 10 minutos** (`CHECKOUT_BUSY`). Después de la idempotencia, bajo candado por mercado y antes de tocar stock.
+- Los dos últimos umbrales son columnas **privadas** de `settings` (3 y 30), ajustables sin desplegar. El de unidades es constante y está en la 0046, `lib/checkout/limits.ts` y el carrito: un test vigila que coincidan.
+- **El carrito limita cada línea a 10** (antes 99) y `/checkout` avisa antes de rellenar nada si varias líneas suman más.
+- **Regresión encontrada y corregida (`0047`):** el candado de la 0046 iba después de la idempotencia, y dos envíos simultáneos con la misma clave chocaban con el índice único (`23505`; el test del doble envío falló 2 de 3). Ahora el candado va antes: 5/5.
+- **Verificación:** `npm test` **1198/1198** con integración · lint, tsc y build verdes · **E2E 15/15** en Chrome 155 headless a 390×844 sobre el build servido (carrito y ficha se paran en 10, aviso antes del primer campo, compra real de 10 uds, cero errores de consola). Baseline restaurado.
+
+---
+
 ## Incremento 21 — La IA se enciende y se apaga, y deja de ser de pago (2026-09-24)
 
 - **Interruptor «Ayuda con IA» en `/admin/ajustes`** (migración `0045`, DEC-087). `settings.ai_assist_enabled` **nace apagado**: mandar una foto a un tercero es una decisión, no un estado inicial. Columna **privada** por herencia de la 0041 — comprobado: `anon` recibe `401`.

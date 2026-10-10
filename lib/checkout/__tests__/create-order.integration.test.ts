@@ -1,6 +1,7 @@
-import { test, describe, before, after } from "node:test";
+import { test, describe, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { RELAXED, relaxCheckoutLimits, setCheckoutLimits } from "./checkout-limits.helper.ts";
 
 /**
  * Tests de INTEGRACIÓN de `create_order` contra el Supabase REAL (Fase 6).
@@ -52,6 +53,16 @@ function readEnv(): Env | null {
 
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
+
+// Esta suite crea pedidos más deprisa de lo que la 0046 deja a un cliente real:
+// se relajan los umbrales y se restauran al terminar (DEC-088).
+let restoreCheckoutLimits: (() => Promise<void>) | null = null;
+before(async () => {
+  if (env) restoreCheckoutLimits = await relaxCheckoutLimits(env);
+});
+after(async () => {
+  await restoreCheckoutLimits?.();
+});
 
 /**
  * Un método de entrega ACTIVO del mercado, resuelto en tiempo real.
@@ -902,6 +913,171 @@ describe("create_order — integración contra Supabase real", { skip }, () => {
       });
       const rows = (await response.json()) as unknown;
       assert.deepEqual(rows, []);
+    });
+  });
+
+  // ── LÍMITES ANTI-ABUSO (0046, DEC-088) ─────────────────────────────────
+  describe("límites anti-abuso (DEC-088)", () => {
+    /** Un teléfono que ningún otro test ha usado: aísla el límite por teléfono. */
+    const freshPhone = () =>
+      `+34 6${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
+
+    /**
+     * Pedidos de ES que la 0046 va a contar ahora mismo. Los ha creado esta
+     * misma suite segundos antes; el baseline no tiene pedidos.
+     */
+    async function recentEsOrders(): Promise<number> {
+      const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const rows = (await admin(
+        `orders?select=id&market_id=eq.ES&created_at=gte.${encodeURIComponent(since)}`,
+      )).body as unknown[];
+      return rows.length;
+    }
+
+    async function ordersOfPhone(phone: string): Promise<number> {
+      const digits = phone.replace(/\D/g, "");
+      const rows = (await admin(
+        `orders?select=id,customer:customers!inner(phone)&customer.phone=eq.${digits}`,
+      )).body as unknown[];
+      return rows.length;
+    }
+
+    afterEach(async () => {
+      await setCheckoutLimits(env!, "ES", RELAXED);
+    });
+
+    test("11 unidades -> ORDER_TOO_LARGE, sin pedido y sin tocar stock", async () => {
+      const variantId = await makeFixture({ stock: 50 });
+      const result = await callCreateOrder(
+        await base([{ variant_id: variantId, quantity: 11 }]),
+      );
+      assert.equal(errorCode(result.body), "ORDER_TOO_LARGE");
+      assert.equal(await stockOf(variantId), 50);
+    });
+
+    test("el tope suma líneas: 6 + 5 -> ORDER_TOO_LARGE; 6 + 4 -> pedido", async () => {
+      const a = await makeFixture({ stock: 50 });
+      const b = await makeFixture({ stock: 50, sizeIndex: 1 });
+
+      const tooMany = await callCreateOrder(
+        await base([{ variant_id: a, quantity: 6 }, { variant_id: b, quantity: 5 }]),
+      );
+      assert.equal(errorCode(tooMany.body), "ORDER_TOO_LARGE");
+
+      const exact = await callCreateOrder(
+        await base([{ variant_id: a, quantity: 6 }, { variant_id: b, quantity: 4 }]),
+      );
+      assert.equal(exact.status, 200, errorCode(exact.body));
+      assert.equal(await stockOf(a), 44);
+      assert.equal(await stockOf(b), 46);
+    });
+
+    test("teléfono al límite -> TOO_MANY_ORDERS; otro teléfono sigue comprando", async () => {
+      await setCheckoutLimits(env!, "ES", {
+        checkout_max_orders_per_phone_hour: 2,
+        checkout_max_orders_per_market_10min: RELAXED.checkout_max_orders_per_market_10min,
+      });
+      const variantId = await makeFixture({ stock: 50 });
+      const phone = freshPhone();
+      const args = async () => ({
+        ...(await base([{ variant_id: variantId, quantity: 1 }])),
+        p_customer_phone: phone,
+      });
+
+      assert.equal((await callCreateOrder(await args())).status, 200);
+      assert.equal((await callCreateOrder(await args())).status, 200);
+
+      const third = await callCreateOrder(await args());
+      assert.equal(errorCode(third.body), "TOO_MANY_ORDERS");
+      assert.equal(await stockOf(variantId), 48, "el rechazo no se lleva ninguna unidad");
+      assert.equal(await ordersOfPhone(phone), 2);
+
+      const other = await callCreateOrder({
+        ...(await base([{ variant_id: variantId, quantity: 1 }])),
+        p_customer_phone: freshPhone(),
+      });
+      assert.equal(other.status, 200, errorCode(other.body));
+    });
+
+    test("un REINTENTO idempotente no se rechaza aunque el teléfono esté al límite", async () => {
+      await setCheckoutLimits(env!, "ES", {
+        checkout_max_orders_per_phone_hour: 1,
+        checkout_max_orders_per_market_10min: RELAXED.checkout_max_orders_per_market_10min,
+      });
+      const variantId = await makeFixture({ stock: 50 });
+      const args = {
+        ...(await base([{ variant_id: variantId, quantity: 2 }])),
+        p_customer_phone: freshPhone(),
+      };
+
+      const first = await callCreateOrder(args);
+      assert.equal(first.status, 200, errorCode(first.body));
+      const retry = await callCreateOrder(args);
+      assert.equal(retry.status, 200, errorCode(retry.body));
+      assert.equal(order(retry.body).reused, true);
+      assert.equal(order(retry.body).order_id, order(first.body).order_id);
+      assert.equal(await stockOf(variantId), 48, "el reintento no descuenta otra vez");
+    });
+
+    test("mercado al límite -> CHECKOUT_BUSY, aunque cada pedido traiga un teléfono nuevo", async () => {
+      const variantId = await makeFixture({ stock: 50 });
+      await setCheckoutLimits(env!, "ES", {
+        checkout_max_orders_per_phone_hour: RELAXED.checkout_max_orders_per_phone_hour,
+        checkout_max_orders_per_market_10min: (await recentEsOrders()) + 1,
+      });
+      const args = async () => ({
+        ...(await base([{ variant_id: variantId, quantity: 1 }])),
+        p_customer_phone: freshPhone(),
+      });
+
+      const last = await callCreateOrder(await args());
+      assert.equal(last.status, 200, errorCode(last.body));
+
+      const busy = await callCreateOrder(await args());
+      assert.equal(errorCode(busy.body), "CHECKOUT_BUSY");
+      assert.equal(await stockOf(variantId), 49);
+    });
+
+    test("diez pedidos SIMULTÁNEOS con hueco para 3: entran exactamente 3 (candado)", async () => {
+      const variantId = await makeFixture({ stock: 50 });
+      await setCheckoutLimits(env!, "ES", {
+        checkout_max_orders_per_phone_hour: RELAXED.checkout_max_orders_per_phone_hour,
+        checkout_max_orders_per_market_10min: (await recentEsOrders()) + 3,
+      });
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, async () =>
+          callCreateOrder({
+            ...(await base([{ variant_id: variantId, quantity: 1 }])),
+            p_customer_phone: freshPhone(),
+          }),
+        ),
+      );
+
+      assert.equal(results.filter((r) => r.status === 200).length, 3);
+      assert.equal(
+        results.filter((r) => errorCode(r.body) === "CHECKOUT_BUSY").length,
+        7,
+        "sin el candado, los diez cuentan a la vez y entran todos",
+      );
+      assert.equal(await stockOf(variantId), 47);
+    });
+
+    test("un umbral a 0 lo rechaza PostgreSQL: cerraría la tienda sin decidirlo", async () => {
+      const result = await admin("settings?market_id=eq.ES", {
+        method: "PATCH",
+        body: JSON.stringify({ checkout_max_orders_per_market_10min: 0 }),
+      });
+      assert.equal(result.status, 400);
+      assert.equal((result.body as { code?: string }).code, "23514");
+    });
+
+    test("anon NO puede leer los umbrales (nacen privados, 0041)", async () => {
+      const response = await fetch(
+        `${env!.url}/rest/v1/settings?select=checkout_max_orders_per_phone_hour,checkout_max_orders_per_market_10min`,
+        { headers: { apikey: env!.anon, Authorization: `Bearer ${env!.anon}` } },
+      );
+      assert.ok(response.status >= 400, `esperaba rechazo, obtuve ${response.status}`);
     });
   });
 });

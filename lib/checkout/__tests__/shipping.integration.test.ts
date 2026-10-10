@@ -1,6 +1,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { relaxCheckoutLimits } from "./checkout-limits.helper.ts";
 import { resolveShippingCost } from "../shipping.ts";
 
 /**
@@ -47,6 +48,16 @@ function readEnv(): Env | null {
 
 const env = readEnv();
 const skip = env === null ? "sin .env.local: integración NO VALIDADA" : false;
+
+// Esta suite crea pedidos más deprisa de lo que la 0046 deja a un cliente real:
+// se relajan los umbrales y se restauran al terminar (DEC-088).
+let restoreCheckoutLimits: (() => Promise<void>) | null = null;
+before(async () => {
+  if (env) restoreCheckoutLimits = await relaxCheckoutLimits(env);
+});
+after(async () => {
+  await restoreCheckoutLimits?.();
+});
 
 async function db(path: string, init: RequestInit = {}) {
   const response = await fetch(`${env!.url}/rest/v1/${path}`, {
@@ -224,7 +235,8 @@ describe("envío · la regla es la misma en TypeScript y en PostgreSQL", { skip 
     EL TEST CENTRAL. Con precio de variante 10,00 y umbral 60, las cantidades
     5 y 6 caen justo a los lados del umbral, y la 6 cae EXACTAMENTE en él.
   */
-  for (const quantity of [1, 5, 6, 7, 12]) {
+  // Hasta 10: es el máximo de unidades por pedido (0046, DEC-088).
+  for (const quantity of [1, 5, 6, 7, 10]) {
     test(`${quantity} uds: PostgreSQL y resolveShippingCost coinciden`, async () => {
       const result = await order(quantity, methodPaid.id);
       assert.ok(result.status < 300, JSON.stringify(result.body));
@@ -263,7 +275,7 @@ describe("envío · la regla es la misma en TypeScript y en PostgreSQL", { skip 
   test("un método sin umbral nunca sale gratis por importe", async () => {
     const { body } = await db(`shipping_methods?id=eq.${methodPaid.id}&select=id`);
     assert.ok(body);
-    const result = await order(12, methodFree.id); // 120,00
+    const result = await order(10, methodFree.id); // 100,00
     assert.equal(num(result.body.shipping_total), 0, "este vale 0 de precio base");
   });
 

@@ -6,9 +6,10 @@
 
 ## STATUS
 
-**FASE 9.5 — Panel Operativo · Incrementos 1–4, 5A/5B/5C, 6, P2, P3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19 y 20: COMPLETADOS**
+**FASE 9.5 — Panel Operativo · Incrementos 1–4, 5A/5B/5C, 6, P2, P3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20 y 21: COMPLETADOS**
+**FASE 10 — CSP/HSTS (DEC-086) hechos · Límites anti-abuso del checkout (DEC-088, migraciones `0046` y `0047`): COMPLETADO**
 
-Última actualización: 2026-09-11
+Última actualización: 2026-10-10
 
 Fase 9 quedó completada salvo la auditoría CWV. Fase 9.5 añade lo que hace el panel *operable a diario*: contacto por WhatsApp desde el pedido (Inc. 1), data layer sin descargas completas (Inc. 2), centro operativo (Inc. 3), inventario con reposición atómica (Inc. 4), **el pedido como expediente** (5A), **publicación consistente** (5B), **trazabilidad administrativa** (5C), **colores y tallas administrables** (Inc. 6), el **detector de publicados sin foto** (P2), la **búsqueda de pedidos por teléfono y nombre** (P3), la **subida de varias fotos** (Inc. 7), el **envío con total fiable** (Inc. 8), los **métodos de entrega administrables** (Inc. 9), el **bloqueo de venta sin WhatsApp real + el detector de fotos rotas** (Inc. 10) y, con los incrementos **16 y 17**, la **identidad de la tienda fuera del código** —nombre, frase y **logo**—, un **checkout que avisa antes de que el cliente rellene nada**, un **estado de venta accionable** y, con los incrementos **18 y 19**, la **recuperación de contraseña del administrador** y un **catálogo preparado para vender**.
 
@@ -712,14 +713,14 @@ Conclusión honesta: **la deuda no era reproducible**. `revalidatePath('/', 'lay
 - Pagos online, Stripe/MercadoPago/Wompi (Fase 11).
 - Login/cuentas de cliente e historial de pedidos para el comprador.
 - Emails, SMS, tracking, analytics.
-- Rate limiting del checkout (Fase 10).
+- ~~Rate limiting del checkout~~ — **acotado en Fase 10** (DEC-088, migraciones `0046` y `0047`).
 - Multi-admin con roles granulares, import/export CSV, reportes.
 
 ### ⚠️ DEUDA TÉCNICA
 
 - **Sin navegador automatizado en este entorno**: ningún clic real del panel está comprobado. Lo que sí se validó: 78 comprobaciones end-to-end sobre el build servido, 39 de RLS, 38 de sesión y 295 tests. Los *hydration mismatch* y el repintado tras una acción **no** están verificados.
 - `order_items` **no guarda la imagen** del producto: un pedido histórico no puede mostrar la foto (heredado de Fase 6, documentado en `03-DATABASE.md`).
-- `create_order` sigue siendo un endpoint público sin autenticación: se pueden crear pedidos basura que consuman stock. Mitigación (rate limiting) prevista para Fase 10.
+- `create_order` sigue siendo un endpoint público sin autenticación. **Desde la 0046 (DEC-088)** un pedido admite 10 unidades como máximo y hay límites por teléfono y por mercado; un script que invente teléfonos solo lo frena el límite global, que también frena a los clientes legítimos mientras dure el ataque.
 - `is_admin()` e `is_active_market()` conservan `EXECUTE` para PUBLIC (herencia de Fases 3/4.5). Necesario para que las policies se evalúen, e inocuo para un anónimo, pero no está acotado a `anon`/`authenticated`.
 - **Las policies de admin no filtran por mercado**: un admin ve ES y CO. El filtrado por `market_id` es responsabilidad del código (`lib/data/admin/*` y `variantBelongsToMarket()`), no de RLS.
 - **Cancelar un pedido `shipped` devuelve stock** aunque la mercancía haya salido físicamente. Es coherente con el modelo (se descontó al crear) y queda auditado, pero si el negocio necesita distinguir "devolución" de "cancelación" harán falta estados nuevos.
@@ -902,7 +903,7 @@ Zustand, Framer Motion, shadcn/ui, React Hook Form, Zod. Ver `/docs/rules/fronte
 - [ ] Subir imágenes reales a `products`/`content` y endurecer los buckets.
 - [x] `robots.ts` que bloquee `/admin` — **hecho en Fase 9**, no pendiente: `app/robots.ts` deniega `/admin`, `/api`, `/carrito`, `/checkout` y `/pedido` (verificado sirviendo `/robots.txt`). Esta línea llevaba obsoleta desde entonces. **No es seguridad**: lo que impide entrar sigue siendo `proxy.ts` → layout → `requireAdmin()` → RLS.
 - [x] Headers de seguridad — **CSP y HSTS hechos en Fase 10** (DEC-086), en `lib/security/headers.ts`. ⬜ Falta cargarlos en un navegador.
-- [ ] Rate limiting del checkout (Fase 10).
+- [x] Límites anti-abuso del checkout — **hechos y verificados** (DEC-088, `0046` + `0047`).
 - [ ] Recorrido manual en navegador real de tienda **y** panel.
 - [ ] Assets de marca reales y copy final aprobado — pendiente de Juan.
 - [ ] Regla "promoción más favorable" — pendiente de Juan; bloquea promociones.
@@ -1016,3 +1017,28 @@ Consecuencia medida, toda ella bloqueada por esto y **ninguna por el código**:
 - `npm test` **1170/1170** (30 nuevos) · lint, tsc y build verdes · baseline restaurado.
 
 ⬜ **Lo que NO está verificado, y no se finge:** la **calidad de una sugerencia real**. Este entorno no tiene `GEMINI_API_KEY`. Se consigue gratis y sin tarjeta en <https://aistudio.google.com/apikey>; con ella puesta y el interruptor encendido, queda probar una foto real.
+
+---
+
+## Fase 10 — Límites anti-abuso del checkout (DEC-088): COMPLETADO
+
+Última actualización: 2026-10-10. **Migraciones `0046` y `0047`.**
+
+**Qué lo motivó, medido en el código:** `create_order` la puede llamar `anon` por POST directo y admitía 50 líneas × 99 unidades: **una sola llamada vaciaba el stock**. Un limitador en Next no servía (se lo salta quien va directo a PostgREST) y contar por IP tampoco (todos los clientes llegan con la IP del servidor).
+
+| Límite | Código | Umbral |
+|---|---|---|
+| Unidades por pedido (sumando líneas) | `ORDER_TOO_LARGE` | **10**, constante (decisión de Juan) |
+| Pedidos por teléfono en 1 hora | `TOO_MANY_ORDERS` | `settings.checkout_max_orders_per_phone_hour` = 3 |
+| Pedidos por mercado en 10 minutos | `CHECKOUT_BUSY` | `settings.checkout_max_orders_per_market_10min` = 30 |
+
+Bajo un candado por mercado tomado ANTES de la idempotencia (0047), con los límites después de la idempotencia y antes de tocar stock. El carrito limita cada línea a 10 y `/checkout` avisa antes de rellenar nada si las líneas suman más.
+
+**Regresión encontrada al ejecutar la integración, y corregida (`0047`):** la 0046 tomaba el candado DESPUÉS de leer la clave de idempotencia. Con dos envíos simultáneos de la misma clave, el segundo pasaba la comprobación, esperaba el candado y al seguir chocaba con el índice único (`23505`): el cliente habría visto «Algo ha ido mal» en vez de su pedido. Medido: el test del doble envío falló **2 de 3**. Con el candado antes de la idempotencia, **5/5**. Antes de la 0046 el hueco era de milisegundos y pasaba por suerte.
+
+**Verificación:**
+
+- `npm test` **1198/1198** con integración: los 8 tests nuevos de límites contra Supabase real (tope, suma de líneas, teléfono, reintento al límite, mercado, **10 simultáneos con hueco para 3 → entran 3**, CHECK a 0 → `23514`, `anon` no lee los umbrales) + `limits.test.ts` (17), que lee las migraciones.
+- `npx tsc --noEmit`, `npm run lint` y `npm run build` verdes; mismas formas de ruta (`/` y `/carrito` estáticas con ISR, fichas SSG, `/checkout` dinámica). `types/database.types.ts` regenerado (las dos columnas nuevas).
+- **E2E 15/15** en Chrome 155 headless a 390×844 sobre el build servido: carrito manipulado a 15 → 10 y botón de sumar deshabilitado; la ficha se para en 10; con 11 uds el aviso sale **por encima del primer campo** (201 px frente a 383), el enlace mide 44 px y COMPRAR sigue deshabilitado con todo relleno; con 10 uds el pedido se crea de verdad (6 + 4); **cero errores de consola y cero violaciones de CSP**; sin scroll horizontal.
+- Baseline restaurado: umbrales 3/30, número de WhatsApp del seed, 0 pedidos, 0 clientes, stocks originales.
