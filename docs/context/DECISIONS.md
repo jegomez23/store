@@ -1937,3 +1937,24 @@ Los cuentan bajo `pg_advisory_xact_lock` por mercado: sin el candado, peticiones
 **Reason:** un fallo ruidoso al desplegar es barato; un canonical a localhost indexado, o vender en el mercado equivocado, no.
 
 **Consequences:** en local y en CI no cambia nada (no hay `VERCEL`). El primer Preview falla si no se han configurado las cuatro variables, y el log dice cuáles.
+
+---
+
+## DEC-091 — Lo que tarda un producto en verse: caché del navegador a 30 s y fotos reducidas antes de subir
+
+**Status:** Accepted *(fase final, Preview en Vercel, 2026-10-12)*
+
+**Context:** Juan notó en el Preview que un producto subido desde el panel «tarda en aparecer» en la tienda. Revisado de punta a punta:
+- **El servidor no es la causa.** Cada mutación del catálogo llama a `revalidatePath` con la ruta literal (DEC-037/041), y en Next 16.3.8 `revalidatePath` expira al momento —sin perfil de stale-while-revalidate— (`next/dist/server/web/spec-extension/revalidate.js`). La matriz de `lib/admin/revalidate.ts` cubre crear, publicar, variantes e imágenes.
+- **El navegador sí.** El router de Next guarda en el navegador cada página estática ya visitada o precargada durante `staleTimes.static`, que por defecto vale **300 s** (`config-shared.js`). `revalidatePath` desde la Server Action solo vacía la caché de la pestaña del panel: otra pestaña con la tienda abierta seguía enseñando la home sin el producto, al navegar por enlaces, hasta 5 minutos.
+- **La subida era el paso lento del alta.** Una foto que cabía en el presupuesto de DEC-089 viajaba entera aunque `sharp` fuera a quedarse con 2000 px: 3,27 MB por foto de 3000×4000.
+
+**Decision:**
+- `experimental.staleTimes.static = 30` en `next.config.ts`, el mínimo que admite Next (`config-schema.js`: `gte(30)`). Medido sobre el build servido: `x-nextjs-stale-time: 30` en `/` y en la ficha (el valor anterior, 300, sale de leer el código de Next, no de una medición).
+- El navegador **reduce a 2000 px toda foto de más de 1 MB que traiga más píxeles de los que se conservan**, aunque quepa (`RESIZE_BEFORE_UPLOAD_MIN_BYTES`, `mayNeedResizeBeforeUpload`). Si ya cabía, solo se prueba la calidad alta (0,85) y nunca se cambia el original por algo que pese igual o más.
+
+**Alternatives:** (a) `force-dynamic` o bajar el ISR: prohibido por DEC-021 y no habría tocado la caché del navegador; (b) etiquetas con `updateTag`: el data layer no usa `fetch` y el servidor ya invalida al instante; (c) procesar en paralelo la WebP y el blur en el servidor: medido, ninguna mejora estable (902–942 ms frente a 913–1124 ms).
+
+**Reason:** las dos esperas reales eran la caché del cliente y los bytes de subida; las dos se quitan sin tocar la estrategia de render ni la validación del servidor.
+
+**Consequences:** al navegar por la tienda, un enlace visitado hace más de 30 s se vuelve a pedir; lo sirve la caché ISR del CDN, sin renderizar. Medido con una foto de 3,27 MB: viaja con **0,86 MB** (×3,8 menos) a 1500×2000, y `sharp` tarda ~0,65 s en vez de ~1,1 s. Una foto que ya cabía pasa por una recompresión JPEG 0,85 antes de la WebP 80 del servidor. **Sigue sin medirse en Vercel** (tiempos reales de subida y región): el Preview está protegido y no hay acceso desde este entorno.

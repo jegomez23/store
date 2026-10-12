@@ -7,12 +7,14 @@ import {
   MAX_FILES_PER_BATCH,
   MAX_IMAGE_BYTES,
   PLATFORM_BODY_LIMIT_BYTES,
+  RESIZE_BEFORE_UPLOAD_MIN_BYTES,
   UPLOAD_REQUEST_BUDGET_BYTES,
   buildAutoAltText,
   buildLogoPath,
   checkImageUpload,
   detectImageFormat,
   isLogoPath,
+  mayNeedResizeBeforeUpload,
   parseAltText,
   uploadBudgetPerFile,
 } from "../images.ts";
@@ -105,6 +107,25 @@ describe("límite del cuerpo de las Server Actions (incrementos 7 y 17, DEC-089)
     assert.equal(uploadBudgetPerFile(0), UPLOAD_REQUEST_BUDGET_BYTES);
     assert.equal(uploadBudgetPerFile(-3), UPLOAD_REQUEST_BUDGET_BYTES);
     assert.ok(uploadBudgetPerFile(2.5) <= UPLOAD_REQUEST_BUDGET_BYTES / 2);
+  });
+
+  test("una foto pesada se abre aunque quepa: trae píxeles que el servidor tiraría (DEC-091)", () => {
+    const budget = uploadBudgetPerFile(1);
+    // 3,27 MB cabía en el presupuesto y antes viajaba entera.
+    assert.ok(3_270_000 <= budget);
+    assert.equal(mayNeedResizeBeforeUpload(3_270_000, budget), true);
+  });
+
+  test("una foto ligera se manda sin abrirla", () => {
+    assert.equal(mayNeedResizeBeforeUpload(RESIZE_BEFORE_UPLOAD_MIN_BYTES, uploadBudgetPerFile(1)), false);
+    assert.equal(mayNeedResizeBeforeUpload(300_000, uploadBudgetPerFile(1)), false);
+  });
+
+  test("lo que no cabe en su parte del lote se abre siempre, aunque sea ligero", () => {
+    const budget = uploadBudgetPerFile(MAX_FILES_PER_BATCH);
+    assert.ok(budget < RESIZE_BEFORE_UPLOAD_MIN_BYTES);
+    assert.equal(mayNeedResizeBeforeUpload(budget + 1, budget), true);
+    assert.equal(mayNeedResizeBeforeUpload(budget, budget), false);
   });
 
   test("`next.config.ts` usa ESA constante y no un número suelto", () => {

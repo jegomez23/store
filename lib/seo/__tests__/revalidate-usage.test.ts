@@ -115,4 +115,13 @@ describe("invalidación por ruta literal (DEC-037)", () => {
       );
     }
   });
+
+  test("el navegador no guarda la tienda 5 minutos: staleTimes.static = 30 (DEC-091)", () => {
+    // Por defecto el router de Next reutiliza en el navegador una página
+    // estática durante 300 s, aunque el servidor ya la haya invalidado: una
+    // pestaña de la tienda abierta no veía el producto recién publicado. 30 es
+    // el mínimo que acepta Next; quitarlo vuelve a los 5 minutos sin avisar.
+    const config = fs.readFileSync("next.config.ts", "utf8");
+    assert.match(config, /staleTimes:\s*\{\s*static:\s*30,?\s*\}/);
+  });
 });

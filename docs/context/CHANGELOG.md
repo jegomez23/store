@@ -4,6 +4,14 @@
 
 ---
 
+## Fase final — Un producto nuevo se ve antes (2026-10-12)
+
+- **La tienda ya no se queda 5 minutos en la caché del navegador** (DEC-091): `staleTimes.static` pasa del valor por defecto, 300 s, a 30 s, el mínimo de Next. El servidor ya invalidaba al instante; lo que retrasaba el producto nuevo era una pestaña de la tienda abierta. Medido: `x-nextjs-stale-time: 30`.
+- **Las fotos se reducen a 2000 px en el navegador aunque quepan**: una de 3,27 MB viaja con 0,86 MB y el servidor la procesa en ~0,65 s en vez de ~1,1 s.
+- **Verificación:** `npm test` 1216/1217 (falla `recovery.integration` por la configuración de Redirect URLs del proyecto de pruebas, no por el código) · lint, tsc y build verdes · **E2E 16/16** en Chrome headless a 390×844 sobre el build servido. Baseline restaurado. **Sin medir en Vercel.**
+
+---
+
 ## Fase final — Preparación para Vercel (2026-10-10)
 
 - **Seguridad de dependencias:** `next` 16.3.3 → **16.3.8** (RCE crítica en `next/og` `ImageResponse`, que usa `/opengraph-image`; SSRF en Image Optimization; envenenamiento de caché ISR), `sharp` → 0.35.5, `source-map-js` transitivo. `npm audit --omit=dev`: 0.

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { uploadBudgetPerFile } from "@/lib/admin/images";
+import { mayNeedResizeBeforeUpload, uploadBudgetPerFile } from "@/lib/admin/images";
 
 /**
  * Reduce en el NAVEGADOR las fotos elegidas para que quepan en una petición a
@@ -17,9 +17,10 @@ import { uploadBudgetPerFile } from "@/lib/admin/images";
  * `checkImageUpload`.
  *
  * Se reduce hasta `maxEdge` px de lado —el mismo tope que aplica `sharp`
- * después, así que no se pierde nada que se fuera a conservar— y solo si el
- * archivo no cabe ya en su parte del presupuesto. Una foto que ya cabe se manda
- * INTACTA.
+ * después, así que no se pierde nada que se fuera a conservar—. Desde DEC-091
+ * se reduce también una foto que cabe pero trae más píxeles de los que se van
+ * a guardar: subirlos era el paso más lento del alta. Una foto ligera o que ya
+ * tiene el tamaño final se manda INTACTA.
  *
  * Mecánica: las fotos reducidas se vuelven a meter en el propio `<input>` con
  * `DataTransfer`, así que el formulario y la Server Action no cambian. Mientras
@@ -62,12 +63,17 @@ function renamed(name: string, type: string): string {
 }
 
 /**
- * Devuelve el archivo original si ya cabe o si el navegador no sabe abrirlo
- * (que lo diga el servidor), y si no, la primera versión que quepa. Un PNG se
- * intenta primero como PNG para no perder la transparencia de un logo.
+ * Devuelve el archivo original si no hay nada que ganar —pesa poco, o ya tiene
+ * el tamaño que va a conservar el servidor y cabe— o si el navegador no sabe
+ * abrirlo (que lo diga el servidor). Si no, la primera versión que quepa y
+ * pese menos que el original. Un PNG se intenta primero como PNG para no
+ * perder la transparencia de un logo.
+ *
+ * Desde DEC-091 también se reduce una foto que YA cabía pero trae más píxeles
+ * de los que `sharp` va a guardar: es lo que más tiempo de subida ahorra.
  */
 async function shrinkImageFile(file: File, maxBytes: number, maxEdge: number): Promise<File> {
-  if (file.size <= maxBytes) return file;
+  if (!mayNeedResizeBeforeUpload(file.size, maxBytes)) return file;
 
   let image: HTMLImageElement;
   try {
@@ -78,9 +84,15 @@ async function shrinkImageFile(file: File, maxBytes: number, maxEdge: number): P
 
   const longest = Math.max(image.naturalWidth, image.naturalHeight);
   if (longest === 0) return file;
+  if (longest <= maxEdge && file.size <= maxBytes) return file;
   const types = file.type === "image/png" ? ["image/png", "image/jpeg"] : ["image/jpeg"];
+  // Nunca se cambia el original por algo que pese lo mismo o más.
+  const limit = Math.min(maxBytes, file.size - 1);
+  // Si ya cabía, solo se prueba la calidad alta: bajar más la calidad de una
+  // foto que se podía enviar es perder nitidez por nada.
+  const attempts = file.size <= maxBytes ? ATTEMPTS.slice(0, 1) : ATTEMPTS;
 
-  for (const attempt of ATTEMPTS) {
+  for (const attempt of attempts) {
     const scale = Math.min(1, (maxEdge * attempt.scale) / longest);
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -91,7 +103,7 @@ async function shrinkImageFile(file: File, maxBytes: number, maxEdge: number): P
 
     for (const type of types) {
       const blob = await toBlob(canvas, type, attempt.quality);
-      if (blob && blob.size <= maxBytes) {
+      if (blob && blob.size <= limit) {
         return new File([blob], renamed(file.name, type), {
           type,
           lastModified: file.lastModified,
@@ -128,7 +140,7 @@ export function useImageShrinker(maxEdge: number): ImageShrinker {
     }
 
     const budget = uploadBudgetPerFile(files.length);
-    if (files.every((file) => file.size <= budget)) {
+    if (files.every((file) => !mayNeedResizeBeforeUpload(file.size, budget))) {
       setBusy(false);
       return;
     }

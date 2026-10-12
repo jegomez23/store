@@ -74,6 +74,30 @@ export function uploadBudgetPerFile(count: number): number {
   return Math.floor(UPLOAD_REQUEST_BUDGET_BYTES / Math.max(1, Math.floor(count)));
 }
 
+/**
+ * Por debajo de este peso una foto se envía tal cual, sin abrirla (DEC-091).
+ *
+ * Por encima, el navegador mira sus dimensiones y, si pasa del lado máximo que
+ * va a conservar `sharp`, la reduce ANTES de subirla aunque quepa en el
+ * presupuesto. Esos píxeles el servidor los iba a tirar igual; mandarlos solo
+ * costaba tiempo de subida. Medido con una foto de 3000×4000 de 3,27 MB, que
+ * cabía y viajaba entera: reducida a 2000 px pesa 0,78 MB (×4,2 menos que
+ * subir) y `sharp` pasa de ~1,1 s a ~0,65 s.
+ *
+ * 1 MB porque una foto de 2000 px ya ronda ese peso: por debajo no hay subida
+ * que ahorrar y abrirla solo gastaría batería del móvil.
+ */
+export const RESIZE_BEFORE_UPLOAD_MIN_BYTES = 1_000_000;
+
+/**
+ * ¿Merece la pena abrir esta foto en el navegador antes de enviarla? Sí si no
+ * cabe en su parte del presupuesto, o si pesa lo bastante como para traer más
+ * píxeles de los que se van a conservar.
+ */
+export function mayNeedResizeBeforeUpload(fileBytes: number, budgetBytes: number): boolean {
+  return fileBytes > Math.min(budgetBytes, RESIZE_BEFORE_UPLOAD_MIN_BYTES);
+}
+
 export const ACCEPTED_FORMATS = ["jpeg", "png", "webp"] as const;
 export type ImageFormat = (typeof ACCEPTED_FORMATS)[number];
 

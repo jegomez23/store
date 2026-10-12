@@ -1434,6 +1434,10 @@ El servidor sigue haciendo lo de siempre (magic bytes, 5 MB, `sharp` → WebP). 
 
 `lib/security/deploy-env.ts` hace fallar el build de Vercel si falta `NEXT_PUBLIC_SITE_URL`/`_MARKET`/Supabase. Si añades una variable `NEXT_PUBLIC_*` imprescindible en producción, añádela ahí y a la tabla de `11-ENVIRONMENT.md` §5.2. Si añades un secreto, **sin** prefijo; la comprobación falla si su nombre lleva `SECRET`, `API_KEY`, `SERVICE_ROLE`, `TOKEN`… con `NEXT_PUBLIC_`. El mensaje de error **nunca** lleva valores.
 
-### 31.4 Lo que no se hace sin Juan
+### 31.4 «Tarda en aparecer» casi nunca es el servidor (DEC-091)
+
+`revalidatePath` expira al momento. Si un cambio del panel no se ve, mira primero la caché del ROUTER del navegador: `experimental.staleTimes.static` está en **30** (el mínimo) y un test lo vigila; no lo quites. Las fotos se reducen en el navegador a 2000 px aunque quepan (`mayNeedResizeBeforeUpload`): no lo «optimices» volviendo a mandar el original, que es lo que hacía lenta el alta.
+
+### 31.5 Lo que no se hace sin Juan
 
 Promover a producción, conectar un dominio, cambiar DNS, ejecutar migraciones o seeds en el Supabase de producción. Preview sí, con el proyecto de pruebas.

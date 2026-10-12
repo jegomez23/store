@@ -98,6 +98,24 @@ const nextConfig: NextConfig = {
       bodySizeLimit: ACTION_BODY_LIMIT_BYTES,
     },
     proxyClientMaxBodySize: ACTION_BODY_LIMIT_BYTES,
+    /**
+     * CACHÉ DEL NAVEGADOR (DEC-091). El servidor invalida al instante
+     * (`lib/admin/revalidate.ts`), pero el router de Next guarda en el
+     * navegador cada página estática que ya visitó o precargó, y por defecto
+     * durante **5 minutos** (`staleTimes.static = 300`, comprobado en
+     * `next/dist/server/config-shared.js`). Una pestaña de la tienda que ya
+     * estaba abierta seguía enseñando la home sin el producto recién
+     * publicado al navegar por enlaces, aunque el servidor ya tuviera la
+     * nueva. `revalidatePath` en la Server Action solo vacía la caché de la
+     * pestaña del PANEL, no la de las demás.
+     *
+     * 30 s es el mínimo que admite Next (`config-schema.js`: `gte(30)`). Coste:
+     * tras 30 s un enlace se vuelve a pedir en vez de reutilizarse; las
+     * páginas son ISR y las sirve la caché del CDN, sin renderizar.
+     */
+    staleTimes: {
+      static: 30,
+    },
   },
   images: {
     remotePatterns: supabaseHostname
